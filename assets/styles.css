@@ -16,6 +16,10 @@
   --gold:       #f6c945;   /* points / leader */
   --gold-soft:  #4a3c10;
   --red:        #ff6b6b;
+  /* host nations 2026 — Mexico / USA / Canada */
+  --mx:         #2fe08a;   /* Mexico green (shared with pitch) */
+  --us:         #5b8cff;   /* USA blue */
+  --ca:         #ff5a5f;   /* Canada red */
   --radius:     16px;
   --shadow:     0 18px 40px -18px rgba(0,0,0,.7);
 }
@@ -24,13 +28,35 @@
 html, body { margin: 0; padding: 0; }
 body {
   font-family: "Cairo", system-ui, sans-serif;
+  /* host-nation glows: USA blue (top-right), Mexico green (top-left),
+     Canada red (bottom) + a gold trophy accent, over a dark stadium base */
   background:
-    radial-gradient(1100px 600px at 80% -10%, rgba(47,224,138,.10), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgba(246,201,69,.07), transparent 55%),
+    radial-gradient(900px 520px at 84% -8%, rgba(91,140,255,.13), transparent 60%),
+    radial-gradient(820px 480px at 10% 4%, rgba(47,224,138,.13), transparent 58%),
+    radial-gradient(1000px 600px at 50% 114%, rgba(255,90,95,.13), transparent 58%),
+    radial-gradient(680px 420px at 90% 96%, rgba(246,201,69,.07), transparent 60%),
     var(--ink);
+  background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+}
+/* large faint "26" world-cup watermark in the corner */
+body::before {
+  content: "26";
+  position: fixed; inset-inline-end: -3vw; bottom: -10vh; z-index: 0;
+  pointer-events: none; user-select: none;
+  font-family: "Cairo", sans-serif; font-weight: 900; line-height: .8;
+  font-size: min(72vw, 740px); letter-spacing: -.04em;
+  color: transparent; -webkit-text-stroke: 2px rgba(234,245,238,.045);
+}
+/* World Cup trophy background — centered, faint watermark (text stays readable). */
+body::after {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: url("wc-bg.webp") no-repeat center 42%;
+  background-size: min(62vw, 460px);
+  opacity: .16;
 }
 .hidden { display: none !important; }
 
@@ -174,8 +200,9 @@ em { font-style: normal; }
   background: #fff1; border-radius: 6px; }
 .tname { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .score-in {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
 }
+.score-row { display: flex; align-items: center; gap: 6px; }
 .score-in input {
   width: 46px; text-align: center; padding: 9px 0; font-size: 17px; font-weight: 700;
   background: var(--ink); border: 1px solid var(--line); border-radius: 10px; color: var(--text);
@@ -184,10 +211,16 @@ em { font-style: normal; }
 .score-in input:focus { border-color: var(--green); }
 .score-in input:disabled { opacity: .8; }
 .vs { color: var(--muted); font-weight: 700; }
+/* النتيجة الفعلية/المباشرة بجانب التوقّع */
+.live-score { font-size: 12px; font-weight: 800; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.live-score.fin { color: var(--text); background: #ffffff14; }
+.live-score.is-live { color: #ffd27a; background: rgba(246,201,69,.16); }
 
 .meta { grid-column: 1 / -1; display: flex; justify-content: space-between;
   align-items: center; margin-top: 2px; }
 .kick { font-size: 11.5px; color: var(--muted); }
+.mgrp { color: var(--green); font-weight: 700; }
+.day-count { font-size: 11px; color: var(--muted); font-weight: 700; }
 .pill {
   font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
   letter-spacing: .02em;
@@ -251,7 +284,7 @@ select.pick:disabled { opacity: .75; }
   color: var(--muted); font-weight: 600; font-size: 11px; text-align: center;
   padding: 6px 4px; border-bottom: 1px solid var(--line-soft);
 }
-.gtable th:nth-child(2) { text-align: left; }
+.gtable th:nth-child(2) { text-align: right; }
 .gtable td { text-align: center; padding: 8px 4px; border-bottom: 1px solid var(--line-soft); }
 .gtable tr:last-child td { border-bottom: 0; }
 .gtable .pos { color: var(--muted); font-weight: 700; width: 22px; }
@@ -328,9 +361,11 @@ select.pick:disabled { opacity: .75; }
 .advrow { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .advlbl { font-size: 11px; color: var(--muted); }
 .adv-btn {
+  display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--line); background: var(--ink); color: var(--text);
   padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; transition: .15s;
 }
+.adv-btn .crest, .adv-auto .crest { width: 18px; height: 18px; }
 .adv-btn.sel { border-color: var(--green); background: rgba(47,224,138,.14); color: var(--green); }
 .adv-btn.correct { border-color: var(--gold); color: var(--gold); }
 .adv-btn:disabled { opacity: .7; cursor: default; }
@@ -381,3 +416,140 @@ select.pick:disabled { opacity: .75; }
   .bonus-row { grid-template-columns: 1fr; }
   .tname { font-size: 13px; }
 }
+
+/* ----------------------------- GUIDED TOUR ----------------------------- */
+/* Full-screen dim. The tabs bar is lifted ABOVE it and the current tab is
+   highlighted in place, so the spotlight is always pixel-perfect (phone +
+   laptop) — there is no floating box to drift. */
+#tour-dim { position: fixed; inset: 0; z-index: 1000; background: rgba(4,10,7,.84); }
+/* The bar itself goes transparent during the tour so the dim shows through it —
+   then the active tab floats directly on the dim, radiant, exactly like the
+   explanation card. Extra padding gives the tab's shadow/glow room to breathe. */
+body.tour-on .tabs {
+  position: relative; z-index: 1001; pointer-events: none;
+  padding: 16px; background: transparent; border-color: transparent;
+}
+body.tour-on .tab { opacity: .22; transition: opacity .2s ease; }
+/* Active tab = the explanation card: same gradient surface, border, rounded
+   corners and drop shadow, plus a soft glow so it reads as bright and radiant. */
+body.tour-on .tab.tour-active {
+  opacity: 1; color: var(--text);
+  background: linear-gradient(180deg, var(--surface), var(--ink-2));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 14px 34px -12px rgba(0,0,0,.75), 0 0 22px 2px rgba(47,224,138,.40);
+}
+.tour-card {
+  position: fixed; z-index: 1002; width: min(360px, calc(100vw - 32px));
+  background: linear-gradient(180deg, var(--surface), var(--ink-2));
+  border: 1px solid var(--line); border-radius: 16px;
+  padding: 18px 18px 14px; box-shadow: var(--shadow);
+}
+.tour-card.center { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.tour-kicker { color: var(--green); font-weight: 700; font-size: 13px; }
+.tour-card h3 { margin: 6px 0 8px; font-size: 18px; color: var(--text); }
+.tour-card p { margin: 0; color: var(--text); line-height: 1.95; font-size: 14.5px; }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; gap: 10px; flex-wrap: wrap; }
+.tour-dots { display: flex; gap: 5px; }
+.tour-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.tour-dot.on { background: var(--green); }
+.tour-btns { display: flex; gap: 8px; align-items: center; }
+.tour-btn { border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+  border-radius: 10px; padding: 8px 16px; font-weight: 600; font-size: 14px; }
+.tour-btn.primary { background: var(--green); border-color: var(--green); color: #07120d; }
+.tour-skip { background: none; border: none; color: var(--muted); font-size: 13px; text-decoration: underline; padding: 8px 4px; }
+.tour-x { position: absolute; inset-inline-end: 12px; top: 12px; background: none; border: none;
+  color: var(--muted); font-size: 17px; line-height: 1; padding: 4px; }
+.tour-x:hover { color: var(--text); }
+#tour-help {
+  position: fixed; inset-inline-end: 16px; bottom: 16px; z-index: 60;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--green); color: #07120d; border: none;
+  font-size: 22px; font-weight: 800; box-shadow: var(--shadow);
+}
+#tour-help:hover { filter: brightness(1.05); }
+
+/* small underline link (e.g. "forgot password?") */
+.linkish {
+  display: block; width: 100%; margin-top: 12px;
+  background: none; border: none; color: var(--muted);
+  font-size: 13px; text-decoration: underline; cursor: pointer;
+}
+.linkish:hover { color: var(--text); }
+
+/* ------------------- host-nation accents + new components ------------------- */
+.auth-card { position: relative; overflow: hidden; }
+.auth-card::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 4px;
+  background: linear-gradient(90deg, var(--mx), var(--us) 50%, var(--ca));
+}
+
+/* highlighted note — used for the "deadline extended" banner */
+.note.hl {
+  background: linear-gradient(90deg, rgba(47,224,138,.10), rgba(91,140,255,.10), rgba(255,90,95,.10));
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 14px; color: var(--text); font-weight: 600;
+}
+
+/* predictions-summary stat grid (ملخص توقعاتي) */
+.sum-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 4px 0 18px; }
+.sum-stat {
+  background: linear-gradient(180deg, var(--surface), var(--ink-2));
+  border: 1px solid var(--line-soft); border-radius: 14px;
+  padding: 14px 8px; text-align: center; display: flex; flex-direction: column; gap: 4px;
+}
+.sum-num { font-size: 22px; font-weight: 800; color: var(--green); }
+.sum-num small { font-size: 13px; color: var(--muted); font-weight: 700; }
+.sum-lbl { font-size: 12px; color: var(--muted); }
+@media (max-width: 560px) { .sum-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* perfect-group bonus highlight on the leaderboard breakdown */
+.perfect-tag { color: var(--gold); font-weight: 700; }
+
+/* bracket-vs-knockout consistency reminder */
+.brk-note {
+  grid-column: 1 / -1; margin-top: 6px; font-size: 12.5px; line-height: 1.7;
+  color: #ffd27a; background: rgba(246,201,69,.10);
+  border: 1px solid var(--gold-soft); border-radius: 10px; padding: 7px 10px;
+}
+.brk-note.warn { color: #ffb4a8; background: rgba(255,90,95,.10); border-color: #5a2622; }
+.brk-note b { color: var(--text); }
+
+/* knockout advancer shown automatically when the predicted score is decisive */
+.adv-auto {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 700; font-size: 13px; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 5px 12px;
+}
+.adv-auto.correct { color: var(--green); border-color: var(--green); }
+
+/* stable container for the knockout advancer (hidden until a score is entered) */
+.adv-slot { grid-column: 1 / -1; }
+.adv-slot:empty { display: none; }
+
+/* one-time notice popup (estraha6 only) */
+#notice .notice-dim { position: fixed; inset: 0; z-index: 2000; background: rgba(4,10,7,.78); }
+.notice-card {
+  position: fixed; z-index: 2001; inset-inline: 0; top: 50%; margin: 0 auto;
+  transform: translateY(-50%); width: min(420px, calc(100vw - 40px));
+  background: linear-gradient(180deg, var(--surface), var(--ink-2));
+  border: 1px solid var(--line); border-radius: 18px; padding: 26px 24px;
+  box-shadow: var(--shadow); text-align: center;
+}
+.notice-emoji { font-size: 40px; margin-bottom: 8px; }
+.notice-text { margin: 0 0 18px; color: var(--text); font-size: 17px; font-weight: 700; line-height: 1.9; }
+.notice-ok {
+  width: 100%; padding: 12px; border: 0; border-radius: 12px; font-weight: 700; font-size: 15px;
+  background: linear-gradient(180deg, var(--green), #1bbf6f); color: #042716;
+}
+.notice-ok:hover { filter: brightness(1.06); }
+
+/* how a knockout was decided (extra time / penalties) — display only */
+.decided { display: inline-block; margin-inline-start: 6px; font-size: 11px; font-weight: 700;
+  color: var(--gold); background: var(--gold-soft); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+
+/* advancer pick shown inside each user's prediction chip (knockouts) */
+.chip-adv { font-weight: 800; color: var(--gold); white-space: nowrap; }
+.chip-adv.ok { color: var(--green); }   /* picked the actual advancer */
+.chip-adv.no { color: var(--red); }     /* picked wrong (after the match) */

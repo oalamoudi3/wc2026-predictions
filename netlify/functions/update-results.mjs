@@ -2,18 +2,18 @@
 //  update-results  —  Netlify Scheduled Function
 //  Runs on a cron (see netlify.toml). On every run it:
 //    1. Pulls all World Cup 2026 matches from football-data.org
-//       (falls back to the openfootball GitHub feed if that fails)
+//       (the SINGLE source of truth — no other feed is ever written)
 //    2. Upserts fixtures + final scores into Supabase (service role)
 //    3. Derives champion / finalists / semifinalists for bonus scoring
 //    4. Sets the bonus lock time to the first kickoff
-//  No manual score entry is ever needed.
+//  No manual score entry is ever needed. If football-data is briefly
+//  unavailable (e.g. free-tier rate limit) the run is a no-op and the next
+//  cron retries — so the data never mixes sources or duplicates.
 // =====================================================================
 
 import { createClient } from "@supabase/supabase-js";
 
 const FD_URL = "https://api.football-data.org/v4/competitions/WC/matches";
-const OPENFOOTBALL_URL =
-  "https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json";
 
 // football-data.org stage  ->  our label is identical; we keep their strings.
 const KNOCKOUT = ["LAST_32", "LAST_16", "QUARTER_FINALS", "SEMI_FINALS", "THIRD_PLACE", "FINAL"];
@@ -34,7 +34,25 @@ function winnerToTeam(match) {
 
 // Map a raw football-data.org match object to our row shape.
 function fromFootballData(m) {
-  const ft = m.score?.fullTime ?? {};
+  const sc = m.score ?? {};
+  const ft = sc.fullTime ?? {};
+  const rt = sc.regularTime, et = sc.extraTime, pen = sc.penalties;
+  // SCORING SCORE = the football result at the end of regular + extra time (the
+  // real draw for a shootout). football-data folds the penalty goals into
+  // `fullTime`, so we use regularTime+extraTime directly — robust even when the
+  // feed's fullTime/penalties are momentarily inconsistent (which can otherwise
+  // yield a negative score). Penalties are display-only; `winner` drives the advancer.
+  let home_score = ft.home ?? null;
+  let away_score = ft.away ?? null;
+  if (sc.duration === "PENALTY_SHOOTOUT") {
+    if (rt && rt.home != null && rt.away != null) {
+      home_score = rt.home + (et?.home ?? 0);
+      away_score = rt.away + (et?.away ?? 0);
+    } else if (pen && ft.home != null && ft.away != null) {
+      home_score = Math.max(0, ft.home - (pen.home ?? 0));
+      away_score = Math.max(0, ft.away - (pen.away ?? 0));
+    }
+  }
   return {
     id: m.id,
     stage: m.stage,
@@ -46,83 +64,34 @@ function fromFootballData(m) {
     home_crest: m.homeTeam?.crest ?? null,
     away_crest: m.awayTeam?.crest ?? null,
     status: m.status ?? "SCHEDULED",
-    home_score: ft.home ?? null,
-    away_score: ft.away ?? null,
-    winner: m.score?.winner ?? null,
-    updated_at: new Date().toISOString(),
-  };
-}
-
-// Fallback: openfootball gives fixtures + scores but no stable ids,
-// so we hash date+teams into a deterministic negative id. Names differ
-// from football-data.org, so this path is best-effort (fixtures stay
-// usable; scores attach to these same hashed rows).
-function hashId(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return -Math.abs(h); // negative to avoid clashing with real fd ids
-}
-function fromOpenfootball(m) {
-  const stage = m.group
-    ? "GROUP_STAGE"
-    : m.round === "Final"
-    ? "FINAL"
-    : m.round === "Semi-final"
-    ? "SEMI_FINALS"
-    : m.round === "Quarter-final"
-    ? "QUARTER_FINALS"
-    : m.round === "Round of 16"
-    ? "LAST_16"
-    : m.round === "Round of 32"
-    ? "LAST_32"
-    : "THIRD_PLACE";
-  const id = hashId(`${m.date}-${m.team1}-${m.team2}`);
-  const sc = m.score?.ft;
-  const home_score = Array.isArray(sc) ? sc[0] : null;
-  const away_score = Array.isArray(sc) ? sc[1] : null;
-  let winner = null;
-  if (home_score != null && away_score != null) {
-    winner = home_score > away_score ? "HOME_TEAM" : home_score < away_score ? "AWAY_TEAM" : "DRAW";
-  }
-  return {
-    id,
-    stage,
-    grp: m.group ? `Group ${m.group.replace(/Group\s*/i, "").trim()}` : null,
-    matchday: null,
-    kickoff: new Date(`${m.date}T00:00:00Z`).toISOString(),
-    home_team: m.team1,
-    away_team: m.team2,
-    home_crest: null,
-    away_crest: null,
-    status: home_score != null ? "FINISHED" : "SCHEDULED",
     home_score,
     away_score,
-    winner,
+    winner: sc.winner ?? null,
+    decided_by: sc.duration ?? null,           // REGULAR / EXTRA_TIME / PENALTY_SHOOTOUT (display only)
+    pen_home: pen?.home ?? null,               // shootout score (display only)
+    pen_away: pen?.away ?? null,
     updated_at: new Date().toISOString(),
   };
 }
 
-async function fetchMatches(token) {
-  // ---- primary: football-data.org -----------------------------------
-  if (token) {
-    try {
-      const res = await fetch(FD_URL, { headers: { "X-Auth-Token": token } });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.matches) && data.matches.length) {
-          return { source: "football-data.org", rows: data.matches.map(fromFootballData) };
-        }
-      } else {
-        console.warn("football-data.org responded", res.status);
+// The ONLY source: football-data.org. Returns [] on any failure/rate-limit,
+// in which case the caller keeps existing data and waits for the next run.
+async function fetchFootballData(token) {
+  if (!token) return [];
+  try {
+    const res = await fetch(FD_URL, { headers: { "X-Auth-Token": token } });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.matches) && data.matches.length) {
+        return data.matches.map(fromFootballData);
       }
-    } catch (e) {
-      console.warn("football-data.org fetch failed:", e.message);
+    } else {
+      console.warn("football-data.org responded", res.status);
     }
+  } catch (e) {
+    console.warn("football-data.org fetch failed:", e.message);
   }
-  // ---- fallback: openfootball ---------------------------------------
-  const res = await fetch(OPENFOOTBALL_URL);
-  const data = await res.json();
-  return { source: "openfootball (fallback)", rows: (data.matches || []).map(fromOpenfootball) };
+  return [];
 }
 
 // Derive the actual semifinalists / finalists / champion from knockout rows.
@@ -171,12 +140,13 @@ function computeGroupTables(rows) {
   const cmp = (x, y) =>
     y.pts - x.pts || (y.gf - y.ga) - (x.gf - x.ga) || y.gf - x.gf || x.team.localeCompare(y.team);
 
+  const allGroups = Object.keys(groups);
   const groupRows = [];
   const thirds = [];
   for (const [grp, m] of Object.entries(groups)) {
     // Only record FINAL standings for groups that have actually finished all
     // their matches — otherwise provisional (all-zero, alphabetical) ordering
-    // would award group/third points before any match is played.
+    // would award group points before any match is played.
     const complete = m.size === 4 && [...m.values()].every((t) => t.p >= 3);
     if (!complete) continue;
     const ordered = [...m.values()].sort(cmp);
@@ -190,7 +160,11 @@ function computeGroupTables(rows) {
     });
     if (ordered[2]) thirds.push(ordered[2]);
   }
-  const bestThirds = thirds.sort(cmp).slice(0, 8).map((t) => t.team);
+  // The best-8 third-placed teams is a tournament-wide ranking, so it is only
+  // meaningful — and only scored — once EVERY group has finished. Until then we
+  // return an empty list, so no "best third" points are awarded prematurely.
+  const allComplete = allGroups.length > 0 && groupRows.length === allGroups.length;
+  const bestThirds = allComplete ? thirds.sort(cmp).slice(0, 8).map((t) => t.team) : [];
   return { groupRows, bestThirds };
 }
 
@@ -205,23 +179,69 @@ export default async function handler() {
     auth: { persistSession: false },
   });
 
-  const { source, rows } = await fetchMatches(FOOTBALL_DATA_TOKEN);
-  if (!rows.length) return new Response("No matches fetched", { status: 502 });
+  const incoming = await fetchFootballData(FOOTBALL_DATA_TOKEN);
+  const source = "football-data.org";
+  if (!incoming.length) {
+    // football-data unavailable (e.g. free-tier rate limit). Do nothing this
+    // run — existing fixtures stay intact and the next cron retries. We never
+    // write any other feed, so the data can never mix sources or duplicate.
+    const { count } = await supabase
+      .from("matches")
+      .select("id", { count: "exact", head: true });
+    const msg = `football-data unavailable; kept existing ${count ?? 0} fixtures (retry next run)`;
+    console.log(msg);
+    return new Response(msg, { status: 200 });
+  }
 
-  // Upsert all matches.
+  // ---- Sticky merge: never let a match go backwards -------------------
+  // football-data's free ("delayed") feed flickers: one request says
+  // IN_PLAY 2-0, the next says TIMED/null for the same match. Without this,
+  // each run would overwrite the DB and the score would appear/disappear.
+  // Rule: keep the more-advanced status, and never replace a real score with
+  // null. Scores only move forward (TIMED → IN_PLAY → FINISHED).
+  const { data: existingRows } = await supabase
+    .from("matches")
+    .select("id,status,home_score,away_score,winner");
+  const existing = new Map((existingRows || []).map((r) => [r.id, r]));
+  const rank = (s) =>
+    s === "FINISHED" || s === "AWARDED" ? 2 : s === "IN_PLAY" || s === "PAUSED" ? 1 : 0;
+  const rows = incoming.map((r) => {
+    const e = existing.get(r.id);
+    if (!e) return r;
+    // feed regressed (e.g. back to TIMED) → keep what we already had
+    if (rank(e.status) > rank(r.status)) {
+      return { ...r, status: e.status, home_score: e.home_score, away_score: e.away_score, winner: e.winner };
+    }
+    // same/forward status but feed dropped the score → keep the known score
+    if ((r.home_score == null || r.away_score == null) && e.home_score != null && e.away_score != null) {
+      return { ...r, home_score: e.home_score, away_score: e.away_score, winner: r.winner ?? e.winner };
+    }
+    return r;
+  });
+
+  // Upsert the merged (forward-only) rows.
   const { error: upErr } = await supabase.from("matches").upsert(rows, { onConflict: "id" });
   if (upErr) {
     console.error("matches upsert error:", upErr);
     return new Response("DB upsert failed: " + upErr.message, { status: 500 });
   }
 
-  // Bonus lock = first kickoff.
-  const firstKickoff = rows
+  // Bonus lock = END of the last matchday-1 game (≈ kickoff + 2h). This gives
+  // everyone until the whole first round is played to refine their group order
+  // and bracket (more skill). Falls back to the first kickoff if matchday 1
+  // can't be identified.
+  const md1 = rows
+    .filter((r) => r.stage === "GROUP_STAGE" && r.matchday === 1 && r.kickoff)
     .map((r) => r.kickoff)
-    .filter(Boolean)
-    .sort()[0];
-  if (firstKickoff) {
-    await supabase.from("app_config").update({ bonus_locks_at: firstKickoff }).eq("id", 1);
+    .sort();
+  let lockAt = null;
+  if (md1.length) {
+    lockAt = new Date(new Date(md1[md1.length - 1]).getTime() + 2 * 60 * 60 * 1000).toISOString();
+  } else {
+    lockAt = rows.map((r) => r.kickoff).filter(Boolean).sort()[0] || null;
+  }
+  if (lockAt) {
+    await supabase.from("app_config").update({ bonus_locks_at: lockAt }).eq("id", 1);
   }
 
   // Tournament outcomes for bonus scoring (core — always present).
@@ -256,5 +276,6 @@ export default async function handler() {
   return new Response(summary, { status: 200 });
 }
 
-// Run every 30 minutes. Change the cron string to taste.
-export const config = { schedule: "*/30 * * * *" };
+// Run every 2 minutes so live/final scores surface quickly during matches.
+// (football-data.org free tier allows 10 requests/min; we make 1 per run.)
+export const config = { schedule: "*/2 * * * *" };

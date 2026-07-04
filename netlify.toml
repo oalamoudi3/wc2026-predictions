@@ -3,7 +3,7 @@
 [build]
   publish = "."                       # static files live at the repo root
   functions = "netlify/functions"
-  command = ""                         # no build step
+  command = "node scripts/build.mjs"
 
 # Netlify's secret scanner flags SUPABASE_URL because it also (correctly)
 # appears in the public assets/config.js. The Supabase URL + anon key are
@@ -19,4 +19,4 @@
 # The schedule is also declared inside update-results.mjs (export const config).
 # Declaring it here too makes it explicit / easy to change.
 [functions."update-results"]
-  schedule = "*/30 * * * *"
+  schedule = "*/2 * * * *"

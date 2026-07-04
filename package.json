@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "World Cup 2026 استراحة 6 prediction game — Netlify + Supabase",
   "type": "module",
-  "private": true,
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"
   }

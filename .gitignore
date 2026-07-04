@@ -1,4 +1,12 @@
 node_modules/
 .netlify/
 .env
+.netlify-deploy.env
+assets/config.js
+scripts/seed-*.sql
+scripts/seed-all.sql
+scripts/seed-all.json
+scripts/seed-batches/
+scripts/seed-clean.sql
+scripts/seed-batch-*.sql
 .DS_Store

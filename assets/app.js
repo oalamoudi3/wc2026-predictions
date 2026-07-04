@@ -6,18 +6,67 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const cfg = window.APP_CONFIG || {};
-if (!cfg.SUPABASE_URL || cfg.SUPABASE_URL.includes("YOUR-PROJECT")) {
-  alert("افتح assets/config.js وأضف رابط Supabase ومفتاح anon أولًا.");
+
+// إذا كان إعداد Supabase ناقصًا أو غير صالح، نعرض رسالة واضحة بدل صفحة فارغة.
+function showConfigError(detail) {
+  const safe = String(detail ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const box = document.createElement("div");
+  box.setAttribute("dir", "rtl");
+  box.style.cssText =
+    "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;" +
+    "padding:24px;background:#0b1220;color:#e8eefc;font-family:Cairo,system-ui,sans-serif;z-index:9999";
+  box.innerHTML =
+    '<div style="max-width:520px;text-align:center;background:#111a2e;border:1px solid #24304d;' +
+    'border-radius:16px;padding:28px 24px;line-height:1.9">' +
+    '<div style="font-size:40px;margin-bottom:8px">⚠️</div>' +
+    '<h2 style="margin:0 0 10px">تعذّر تحميل التطبيق</h2>' +
+    '<p style="margin:0 0 6px">إعداد Supabase غير صالح. يجب ضبط متغيّرات البيئة ' +
+    '<b>SUPABASE_URL</b> و<b>SUPABASE_ANON_KEY</b> في Netlify ثم إعادة النشر.</p>' +
+    '<p style="margin:8px 0 0;opacity:.6;font-size:13px">' + safe + "</p></div>";
+  document.body.appendChild(box);
 }
-const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+
+function validSupabaseUrl(u) {
+  if (!u || u.includes("YOUR-PROJECT")) return false;
+  try {
+    const url = new URL(u);
+    return url.protocol === "https:" && url.hostname.endsWith(".supabase.co");
+  } catch {
+    return false;
+  }
+}
+
+let sb;
+if (!validSupabaseUrl(cfg.SUPABASE_URL) || !cfg.SUPABASE_ANON_KEY) {
+  showConfigError("SUPABASE_URL: " + (cfg.SUPABASE_URL || "(فارغ)"));
+  throw new Error("Invalid Supabase configuration — app halted.");
+}
+sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
 
 // أسماء الأدوار بالعربية
 const STAGE_LABEL = {
+  GROUP_STAGE: "دور المجموعات",
   LAST_32: "دور الـ32", LAST_16: "دور الـ16", QUARTER_FINALS: "ربع النهائي",
   SEMI_FINALS: "نصف النهائي", THIRD_PLACE: "تحديد المركز الثالث", FINAL: "النهائي",
 };
+const FIXTURES_PROXY_URL = "/.netlify/functions/fixtures";
 const STAGE_ORDER = ["LAST_32", "LAST_16", "QUARTER_FINALS", "SEMI_FINALS", "THIRD_PLACE", "FINAL"];
+const STAGE_ALL = ["GROUP_STAGE", ...STAGE_ORDER];
+const STAGE_TO_BRKEY = { LAST_32: "r32", LAST_16: "r16", QUARTER_FINALS: "qf", SEMI_FINALS: "sf", FINAL: "f" };
 const isKnockout = (m) => m.stage && m.stage !== "GROUP_STAGE";
+
+// المرحلة الحالية = مرحلة أقرب مباراة لم تنتهِ (من بين المراحل المعطاة).
+// تُستخدم لفتح المرحلة الجارية فقط وطيّ البقية.
+function activeStage(stagesPresent) {
+  const next = state.matches
+    .filter((m) => stagesPresent.includes(m.stage) && m.status !== "FINISHED")
+    .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff))[0];
+  if (next) return next.stage;
+  for (let i = STAGE_ALL.length - 1; i >= 0; i--) {
+    if (stagesPresent.includes(STAGE_ALL[i])) return STAGE_ALL[i];
+  }
+  return stagesPresent[0];
+}
 const stageLabel = (s) => STAGE_LABEL[s] || String(s).replace(/_/g, " ");
 const grpName = (g) => (g ? String(g).replace(/Group/i, "المجموعة") : g);
 
@@ -26,6 +75,7 @@ const AR_TEAM = {
   "Argentina":"الأرجنتين","Brazil":"البرازيل","France":"فرنسا","England":"إنجلترا","Spain":"إسبانيا",
   "Germany":"ألمانيا","Portugal":"البرتغال","Netherlands":"هولندا","Belgium":"بلجيكا","Italy":"إيطاليا",
   "Croatia":"كرواتيا","Uruguay":"الأوروغواي","Mexico":"المكسيك","United States":"الولايات المتحدة",
+  "Bosnia-Herzegovina":"البوسنة والهرسك","Cape Verde Islands":"الرأس الأخضر","Congo DR":"الكونغو الديمقراطية",
   "USA":"الولايات المتحدة","Canada":"كندا","Japan":"اليابان","South Korea":"كوريا الجنوبية",
   "Korea Republic":"كوريا الجنوبية","Australia":"أستراليا","Morocco":"المغرب","Senegal":"السنغال",
   "Ghana":"غانا","Nigeria":"نيجيريا","Cameroon":"الكاميرون","Egypt":"مصر","Tunisia":"تونس",
@@ -46,7 +96,11 @@ const AR_TEAM = {
   "North Macedonia":"مقدونيا الشمالية","Montenegro":"الجبل الأسود","Georgia":"جورجيا","Israel":"إسرائيل",
   "Indonesia":"إندونيسيا","Thailand":"تايلاند","China PR":"الصين","China":"الصين","India":"الهند",
 };
-const teamName = (t) => (t ? (AR_TEAM[t] || t) : "غير محدد");
+// بحث محصّن ضد اختلاف الترميز/التشكيل (مثل ç في Curaçao، أو المسافات).
+// نطبّع المفاتيح والاسم الوارد إلى NFC حتى تتطابق دائمًا.
+const _norm = (s) => String(s ?? "").normalize("NFC").trim();
+const AR_TEAM_NORM = new Map(Object.entries(AR_TEAM).map(([k, v]) => [_norm(k), v]));
+const teamName = (t) => (t ? (AR_TEAM_NORM.get(_norm(t)) || t) : "غير محدد");
 const tn = (t) => esc(teamName(t));
 
 const state = {
@@ -117,6 +171,41 @@ function toast(msg, isErr = false) {
   t.textContent = msg; t.className = "toast show" + (isErr ? " error" : "");
   clearTimeout(toast._t); toast._t = setTimeout(() => (t.className = "toast"), 2400);
 }
+
+function fromFootballDataMatch(m) {
+  const ft = m.score?.fullTime ?? {};
+  const stage = m.stage || "GROUP_STAGE";
+  const grp = m.group ? `Group ${String(m.group).replace(/GROUP_/i, "").replace(/_/g, " ")}` : null;
+  return {
+    id: m.id,
+    stage,
+    grp,
+    matchday: m.matchday ?? null,
+    kickoff: m.utcDate || null,
+    home_team: m.homeTeam?.name ?? null,
+    away_team: m.awayTeam?.name ?? null,
+    home_crest: m.homeTeam?.crest ?? null,
+    away_crest: m.awayTeam?.crest ?? null,
+    status: m.status ?? "SCHEDULED",
+    home_score: ft.home ?? null,
+    away_score: ft.away ?? null,
+    winner: m.score?.winner ?? null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function loadFootballDataMatches() {
+  try {
+    const res = await fetch(FIXTURES_PROXY_URL);
+    if (!res.ok) throw new Error("fixtures proxy failed: " + res.status);
+    const data = await res.json();
+    return Array.isArray(data.matches) ? data.matches.map(fromFootballDataMatch) : [];
+  } catch (e) {
+    console.warn("Official fixtures unavailable:", e?.message || e);
+    return [];
+  }
+}
+
 function pointsFor(pred, m) {
   if (!pred || m.home_score == null || m.away_score == null) return 0;
   const P = state.config;
@@ -176,6 +265,49 @@ $("#auth-submit").addEventListener("click", async () => {
 
 $("#logout").addEventListener("click", () => sb.auth.signOut());
 
+// ---- استعادة كلمة المرور (نسيت كلمة المرور / رابط الاسترجاع) ----
+let isRecovery = false;
+function showRecovery() {
+  $("#auth-view")?.classList.add("hidden");
+  $("#app-view")?.classList.add("hidden");
+  $("#recovery-view")?.classList.remove("hidden");
+}
+$("#forgot-link")?.addEventListener("click", async () => {
+  const email = $("#email").value.trim();
+  const msg = $("#auth-msg");
+  if (!email) { msg.className = "msg error"; msg.textContent = "أدخل بريدك الإلكتروني أولًا ثم اضغط «نسيت كلمة المرور؟»."; return; }
+  const btn = $("#forgot-link"); btn.disabled = true;
+  // redirectTo = نفس عنوان الموقع، حتى يعود الرابط إلى الموقع لا إلى localhost
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+  btn.disabled = false;
+  if (error) {
+    const sec = /after (\d+) seconds/i.exec(error.message || "");
+    if (sec) {
+      // ليست مشكلة: أُرسل الرابط بالفعل، وهذا مجرد حدّ زمني لمنع التكرار.
+      msg.className = "msg";
+      msg.textContent = `تم إرسال الرابط بالفعل. تحقّق من بريدك (ومجلّد «المهملات»/«العروض»). يمكنك إعادة المحاولة بعد ${sec[1]} ثانية.`;
+    } else {
+      msg.className = "msg error"; msg.textContent = error.message;
+    }
+    return;
+  }
+  msg.className = "msg"; msg.textContent = "أرسلنا رابط إعادة التعيين إلى بريدك. افتح الرابط من نفس المتصفح (تحقّق من «المهملات» أيضًا).";
+});
+$("#recovery-submit")?.addEventListener("click", async () => {
+  const pw = $("#new-password").value;
+  const msg = $("#recovery-msg");
+  if (!pw || pw.length < 6) { msg.className = "msg error"; msg.textContent = "كلمة المرور يجب ألا تقل عن 6 أحرف."; return; }
+  const btn = $("#recovery-submit"); btn.disabled = true;
+  const { error } = await sb.auth.updateUser({ password: pw });
+  btn.disabled = false;
+  if (error) { msg.className = "msg error"; msg.textContent = error.message; return; }
+  isRecovery = false;
+  try { history.replaceState(null, "", window.location.pathname); } catch {}
+  msg.className = "msg"; msg.textContent = "تم تحديث كلمة المرور ✓";
+  const { data } = await sb.auth.getUser();
+  if (data?.user) { if (!entering) { entering = true; enterApp(data.user); } } else { showAuth(); }
+});
+
 let entering = false;
 // Show the app shell FIRST, then load data — so a slow/aborted request on
 // reload can never leave the page blank. Guarded so it runs once.
@@ -184,16 +316,54 @@ async function enterApp(user) {
   state.user = user;
   try { await ensureProfile(); } catch (e) { console.warn("profile:", e?.message); }
   try { await loadAll(); } catch (e) { console.warn("loadAll:", e?.message); }
+  ensureTourHelp();
+  maybeShowNotice();
+  maybeStartTour();
+  startAutoRefresh();
 }
-sb.auth.onAuthStateChange((_evt, session) => {
+sb.auth.onAuthStateChange((evt, session) => {
+  if (evt === "PASSWORD_RECOVERY") { isRecovery = true; showRecovery(); return; }
   if (session?.user) {
+    if (isRecovery) return; // ابقَ على شاشة تعيين كلمة المرور حتى يحفظها
     if (!entering) { entering = true; enterApp(session.user); }
   } else {
     entering = false;
     state.user = null;
+    stopAutoRefresh();
+    endTour(false);
+    $("#tour-help")?.remove();
     showAuth();
   }
 });
+
+// ---- تحديث تلقائي خفيف: يجلب أحدث البيانات ويعيد الرسم كل دقيقة وعند العودة
+// إلى التبويب، حتى لا يحتاج المستخدم لتحديث الصفحة يدويًا. لا يقاطع المستخدم
+// أثناء الكتابة أو السحب أو فتح نافذة منبثقة. ----
+let _refreshTimer = null;
+let _dragBusy = false;
+function userBusy() {
+  const a = document.activeElement;
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return true;
+  if (_dragBusy) return true;                 // أثناء سحب ترتيب المجموعات
+  if ($("#tour") || $("#notice")) return true; // نافذة الجولة/التنبيه مفتوحة
+  const rec = $("#recovery-view");
+  if (rec && !rec.classList.contains("hidden")) return true;
+  return false;
+}
+async function refreshNow() {
+  if (!state.user || document.hidden || userBusy()) return;
+  try { await loadAll(); } catch (e) { console.warn("auto-refresh:", e?.message); }
+}
+function startAutoRefresh() {
+  if (_refreshTimer) return;
+  _refreshTimer = setInterval(refreshNow, 60000);
+  document.addEventListener("visibilitychange", onVisible);
+}
+function stopAutoRefresh() {
+  if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+  document.removeEventListener("visibilitychange", onVisible);
+}
+function onVisible() { if (!document.hidden) refreshNow(); }
 
 async function ensureProfile() {
   const { data } = await sb.from("profiles").select("*").eq("id", state.user.id).maybeSingle();
@@ -215,9 +385,14 @@ async function loadAll() {
     sb.from("matches").select("*").order("kickoff", { ascending: true }),
     sb.from("profiles").select("id,display_name"),
   ]);
-  state.config = conf || { points_result: 1, points_exact: 2, points_champion: 5, points_finalist: 3, points_semifinalist: 2, points_group_pos: 1, points_group_perfect: 3, points_third: 2, points_advance: 2 };
+  state.config = conf || { points_result: 1, points_exact: 2, points_champion: 5, points_finalist: 3, points_semifinalist: 2, points_group_pos: 1, points_group_perfect: 1, points_third: 2, points_advance: 2 };
   state.results = res || {};
   state.matches = matches || [];
+  if (!state.matches.length) {
+    // وحيد المصدر: لو لم تُحمَّل المباريات من قاعدة البيانات بعد، نقرأها من
+    // وسيط football-data.org فقط (لا مصدر بديل، لتفادي أي تعارض في الأسماء).
+    state.matches = await loadFootballDataMatches();
+  }
   state.names = new Map((profiles || []).map((p) => [p.id, p.display_name]));
 
   // خريطة شعارات/أعلام لكل منتخب
@@ -234,20 +409,63 @@ async function loadAll() {
 }
 
 // توقعات الترتيب/الثوالث/الإقصائيات. يتعامل بهدوء إن لم تُطبّق predictions.sql بعد.
+// يجلب كل الصفوف متجاوزًا حدّ 1000 صف في الطلب الواحد. بدون هذا تُسقط بعض
+// التوقعات من الواجهة بينما تبقى محفوظة في قاعدة البيانات.
+//
+// ترقيم Keyset عبر عمود فريد مرتّب (id): مناعة تامة ضد تغيّر ترتيب الصفوف
+// وضد الإدراج المتزامن، فالنتيجة دائمًا كاملة مهما كان العدد. (الترقيم بالإزاحة
+// بدون ترتيب ثابت قد يُسقط/يكرّر صفوفًا بشكل غير متسق.)
+async function fetchAllById(table, columns) {
+  const PAGE = 1000;
+  const cols = columns.split(",").map((c) => c.trim());
+  if (!cols.includes("id")) cols.push("id");
+  const sel = cols.join(",");
+  const all = [];
+  let last = null;
+  for (;;) {
+    let q = sb.from(table).select(sel).order("id", { ascending: true }).limit(PAGE);
+    if (last !== null) q = q.gt("id", last);
+    const { data, error } = await q;
+    if (error) { console.warn("fetchAllById", table, error.message); break; }
+    if (!data || !data.length) break;
+    all.push(...data);
+    last = data[data.length - 1].id;
+    if (data.length < PAGE) break;
+  }
+  return all;
+}
+// للجداول بلا عمود id مفرد (مثل bracket_predictions): ترقيم بالإزاحة مع ترتيب
+// ثابت متعدد الأعمدة حتى يكون مكتملًا وحتميًا.
+async function fetchAllOrdered(table, columns, orderCols) {
+  const PAGE = 1000;
+  let from = 0;
+  const all = [];
+  for (;;) {
+    let q = sb.from(table).select(columns);
+    for (const c of orderCols) q = q.order(c, { ascending: true });
+    const { data, error } = await q.range(from, from + PAGE - 1);
+    if (error) { console.warn("fetchAllOrdered", table, error.message); break; }
+    if (data && data.length) all.push(...data);
+    if (!data || data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
 async function loadExtraPreds() {
-  const [gp, tp, bk, kb] = await Promise.all([
+  const [gp, tp, kb] = await Promise.all([
     sb.from("group_predictions").select("user_id,grp,pos1,pos2,pos3,pos4").eq("user_id", state.user.id),
     sb.from("third_predictions").select("teams").eq("user_id", state.user.id).maybeSingle(),
-    sb.from("bracket_predictions").select("match_id,user_id,advance_team"),
     sb.from("knockout_brackets").select("picks").eq("user_id", state.user.id).maybeSingle(),
   ]);
+  const bk = await fetchAllOrdered("bracket_predictions", "match_id,user_id,advance_team", ["match_id", "user_id"]);
   state.groupPreds = new Map();
   (gp.data || []).forEach((r) => state.groupPreds.set(r.grp, r));
   state.thirdPred = tp.data || { teams: [] };
   state.bracketBuild = (kb.data && kb.data.picks) || {};
   state.bracketPreds = new Map();
   state.bracketOthers = new Map();
-  (bk.data || []).forEach((p) => {
+  bk.forEach((p) => {
     if (p.user_id === state.user.id) state.bracketPreds.set(p.match_id, p.advance_team);
     else {
       if (!state.bracketOthers.has(p.match_id)) state.bracketOthers.set(p.match_id, []);
@@ -257,10 +475,10 @@ async function loadExtraPreds() {
 }
 
 async function loadPredictions() {
-  const { data } = await sb.from("predictions").select("match_id,user_id,home_score,away_score");
+  const data = await fetchAllById("predictions", "match_id,user_id,home_score,away_score");
   state.myPreds = new Map();
   state.othersPreds = new Map();
-  (data || []).forEach((p) => {
+  data.forEach((p) => {
     if (p.user_id === state.user.id) {
       state.myPreds.set(p.match_id, p);
     } else {
@@ -288,7 +506,7 @@ $$(".tab").forEach((t) =>
   })
 );
 function renderActiveTab() {
-  const tab = state.activeTab || "groups";
+  const tab = state.activeTab || "info"; // الافتراضي عند الدخول: المجموعات والجدول
   if (tab === "groups") renderGroups();
   else if (tab === "knockouts") renderKnockouts();
   else if (tab === "bonus") renderBonus();
@@ -296,6 +514,107 @@ function renderActiveTab() {
   else if (tab === "bracket") renderBracket();
   else if (tab === "info") renderInfo();
   else if (tab === "board") renderBoard();
+}
+
+// الفرق التي توقّع المستخدم في «بطاقة التوقّع» تأهّلها من هذا الدور
+function bracketWinnersAtStage(stage) {
+  const k = STAGE_TO_BRKEY[stage];
+  const set = new Set();
+  if (!k) return set;
+  for (const [key, team] of Object.entries(state.bracketBuild || {})) {
+    if (team && key.startsWith(k + "-")) set.add(team);
+  }
+  return set;
+}
+// تنبيه يربط اختيار «يتأهل» في الإقصائيات ببطاقة التوقّع المقفلة لهذا المستخدم.
+// يعتمد فقط على بطاقة المستخدم الحالي (state.bracketBuild) واختياراته (state.bracketPreds).
+function bracketNote(m) {
+  if (!isKnockout(m) || !m.home_team || !m.away_team) return null;
+  const winners = bracketWinnersAtStage(m.stage); // فرق توقّع هذا المستخدم تأهّلها من هذا الدور
+  if (!winners.size) return null;
+  const mine = state.bracketPreds.get(m.id);
+  if (mine) {
+    // عند الاختيار: نبّه إذا أقصى الفريق الذي توقّع تأهّله في بطاقته
+    const elim = mine === m.home_team ? m.away_team : m.home_team;
+    if (elim && winners.has(elim)) {
+      return { text: `في بطاقتك توقّعت تأهّل <b>${tn(elim)}</b> من هذا الدور.`, warn: true };
+    }
+    return null;
+  }
+  // قبل الاختيار: تذكير بالفريق الذي توقّع تأهّله
+  const fav = [m.home_team, m.away_team].find((t) => winners.has(t));
+  if (fav) return { text: `في بطاقتك توقّعت تأهّل <b>${tn(fav)}</b> من هذا الدور.`, warn: false };
+  return null;
+}
+function bracketNoteHtml(m, opts = {}) {
+  if (!opts.advance) return "";
+  const n = bracketNote(m);
+  if (!n) return `<div class="brk-note hidden"></div>`;
+  return `<div class="brk-note${n.warn ? " warn" : ""}">${n.text}</div>`;
+}
+
+// الفائز المُستنتَج من توقّع النتيجة (إن كانت حاسمة)؛ null عند التعادل أو غياب النتيجة
+function impliedWinner(m) {
+  const p = state.myPreds.get(m.id);
+  if (!p || p.home_score == null || p.away_score == null) return null;
+  if (p.home_score > p.away_score) return m.home_team;
+  if (p.away_score > p.home_score) return m.away_team;
+  return null; // تعادل → يلزم اختيار الفائز بركلات الترجيح
+}
+// المتأهّل الفعّال لأي مستخدم: الاختيار الصريح إن وُجد، وإلا يُستنتَج من نتيجة
+// حاسمة (الأعلى تسجيلًا). يطابق منطق get_leaderboard تمامًا حتى تتوافق الشارات
+// ولوحة الصدارة مع المجموع الرسمي. التعادل بلا اختيار صريح → لا متأهّل.
+function effAdvancer(m, pred, explicit) {
+  if (explicit) return explicit;
+  if (!pred || pred.home_score == null || pred.away_score == null) return null;
+  if (pred.home_score > pred.away_score) return m.home_team;
+  if (pred.away_score > pred.home_score) return m.away_team;
+  return null;
+}
+// محتوى «من يتأهل»:
+//  • لا نتيجة بعد → مخفي (فارغ)
+//  • نتيجة حاسمة → سطر «يتأهل للدور التالي: الفريق» (الفائز بالأهداف، بلا أزرار)
+//  • تعادل → أزرار اختيار «الفائز بركلات الترجيح»
+function advanceContentHtml(m, locked) {
+  const p = state.myPreds.get(m.id);
+  const hasScore = p && p.home_score != null && p.away_score != null;
+  if (!hasScore) return ""; // يبقى مخفيًا حتى تُدخل نتيجة
+  const finished = m.status === "FINISHED" && m.home_score != null;
+  const actualAdv = finished
+    ? (m.winner === "HOME_TEAM" ? m.home_team : m.winner === "AWAY_TEAM" ? m.away_team : null)
+    : null;
+  const byGoals = impliedWinner(m);
+  if (byGoals) {
+    const correct = actualAdv && actualAdv === byGoals ? " correct" : "";
+    return `<div class="advrow"><span class="advlbl">يتأهل للدور التالي:</span>` +
+      `<span class="adv-auto${correct}">${flagImg(byGoals, "crest sm")}${tn(byGoals)}</span></div>`;
+  }
+  // تعادل → اختيار الفائز بركلات الترجيح (مع العلم لتوضيح الفريق)
+  const mineAdv = state.bracketPreds.get(m.id);
+  const advBtn = (team) => {
+    const sel = mineAdv === team ? " sel" : "";
+    const correct = actualAdv && actualAdv === team ? " correct" : "";
+    return `<button class="adv-btn${sel}${correct}" data-team="${esc(team)}" ${locked ? "disabled" : ""}>${flagImg(team, "crest sm")}${tn(team)}</button>`;
+  };
+  return `<div class="advrow"><span class="advlbl">الفائز بركلات الترجيح:</span>${advBtn(m.home_team)}${advBtn(m.away_team)}</div>`;
+}
+
+// وسم يوضّح كيف حُسمت المباراة (ركلات الترجيح / الوقت الإضافي) — للعرض فقط.
+// يُستخدم في صف المباراة وفي الجدول الكامل معًا.
+function decidedTag(m) {
+  const finished = m.status === "FINISHED" && m.home_score != null;
+  if (!finished) return "";
+  const penWinner = m.winner === "HOME_TEAM" ? m.home_team : m.winner === "AWAY_TEAM" ? m.away_team : null;
+  const isPens = m.decided_by === "PENALTY_SHOOTOUT" ||
+    (isKnockout(m) && m.home_score === m.away_score && penWinner);
+  if (isPens) {
+    // أظهر نتيجة الترجيح فقط إذا كانت صحيحة (غير متعادلة) — تفاديًا لبيانات ناقصة من المصدر
+    const validPen = m.pen_home != null && m.pen_away != null && m.pen_home !== m.pen_away;
+    const pp = validPen ? ` ${m.pen_home}–${m.pen_away}` : "";
+    return `<span class="decided">بركلات الترجيح${pp}${penWinner ? " — " + tn(penWinner) : ""}</span>`;
+  }
+  if (m.decided_by === "EXTRA_TIME") return `<span class="decided">بعد الوقت الإضافي</span>`;
+  return "";
 }
 
 // =====================================================================
@@ -309,81 +628,125 @@ function matchRow(m, opts = {}) {
   const hv = mine ? mine.home_score : "";
   const av = mine ? mine.away_score : "";
 
+  // نقاط هذه المباراة = نقاط النتيجة + نقطة المتأهّل (للإقصائيات فقط)، حتى
+  // تطابق الشارة لوحة الصدارة تمامًا.
+  let matchPts = pointsFor(mine, m);
+  if (finished && isKnockout(m)) {
+    const actualAdv = m.winner === "HOME_TEAM" ? m.home_team : m.winner === "AWAY_TEAM" ? m.away_team : null;
+    const myAdv = effAdvancer(m, mine, state.bracketPreds.get(m.id));
+    if (actualAdv && myAdv && myAdv === actualAdv) matchPts += (state.config?.points_advance ?? 1);
+  }
+
   let statusPill = `<span class="pill open">مفتوحة</span>`;
   if (live) statusPill = `<span class="pill live">● مباشر</span>`;
-  else if (finished) statusPill = `<span class="pill points">+${pointsFor(mine, m)} نقطة</span>`;
+  else if (finished) statusPill = `<span class="pill points">+${matchPts} نقطة</span>`;
   else if (locked) statusPill = `<span class="pill locked">مقفلة</span>`;
 
   const disabled = locked ? "disabled" : "";
 
-  let actual = "";
-  if (finished) actual = `<span class="actual">النتيجة: <b>${m.home_score}–${m.away_score}</b></span>`;
-  else if (live && m.home_score != null) actual = `<span class="actual">مباشر: <b>${m.home_score}–${m.away_score}</b></span>`;
+  // النتيجة الفعلية/المباشرة تُعرض بجانب توقّع المستخدم مباشرةً للمقارنة.
+  // كيف حُسمت المباراة (للعرض فقط — لا يؤثر على الاحتساب):
+  //  • ركلات الترجيح: تعادل + فائز محدّد (أو decided_by) → تعادل في الاحتساب.
+  //  • الوقت الإضافي: decided_by === EXTRA_TIME.
+  let liveScore = "";
+  if (finished) liveScore = `<span class="live-score fin">النتيجة ${m.home_score}–${m.away_score}</span>${decidedTag(m)}`;
+  else if (live && m.home_score != null) liveScore = `<span class="live-score is-live">● مباشر ${m.home_score}–${m.away_score}</span>`;
 
   // توقعات الآخرين (تظهر بعد انطلاق المباراة فقط عبر RLS)
   let others = "";
   const list = state.othersPreds.get(m.id);
   if (locked && list?.length) {
-    const chips = list
-      .map((p) => `<span class="chip"><b>${esc(state.names.get(p.user_id) || "؟")}</b> ${p.home_score}–${p.away_score}</span>`)
-      .join("");
+    // للإقصائيات: أظهر مَن اختاره كل مستخدم للتأهل (خاصة عند التعادل/الترجيح)،
+    // ولوّنه أخضر إن كان صحيحًا أو أحمر إن كان خاطئًا بعد انتهاء المباراة.
+    const advMap = new Map();
+    (state.bracketOthers.get(m.id) || []).forEach((b) => advMap.set(b.user_id, b.advance_team));
+    const actualAdv2 = finished
+      ? (m.winner === "HOME_TEAM" ? m.home_team : m.winner === "AWAY_TEAM" ? m.away_team : null)
+      : null;
+    const chips = list.map((p) => {
+      const adv = isKnockout(m) ? effAdvancer(m, p, advMap.get(p.user_id)) : null;
+      let advHtml = "";
+      if (adv) {
+        const cls = actualAdv2 ? (adv === actualAdv2 ? " ok" : " no") : "";
+        advHtml = ` <span class="chip-adv${cls}">↗ ${tn(adv)}</span>`;
+      }
+      return `<span class="chip"><b>${esc(state.names.get(p.user_id) || "؟")}</b> ${p.home_score}–${p.away_score}${advHtml}</span>`;
+    }).join("");
     others = `<div class="others">التوقعات: ${chips}</div>`;
   }
 
-  // مَن يتأهل (للإقصائيات فقط، إذا عُرف الفريقان)
+  // مَن يتأهل (للإقصائيات فقط، إذا عُرف الفريقان) — حاوية ثابتة تُحدَّث مع تغيّر النتيجة
   let adv = "";
   if (opts.advance && m.home_team && m.away_team) {
-    const mineAdv = state.bracketPreds.get(m.id);
-    const actualAdv = finished
-      ? (m.winner === "HOME_TEAM" ? m.home_team : m.winner === "AWAY_TEAM" ? m.away_team : null)
-      : null;
-    const advBtn = (team) => {
-      const sel = mineAdv === team ? " sel" : "";
-      const correct = actualAdv && actualAdv === team ? " correct" : "";
-      return `<button class="adv-btn${sel}${correct}" data-team="${esc(team)}" ${locked ? "disabled" : ""}>${tn(team)}</button>`;
-    };
-    adv = `<div class="advrow"><span class="advlbl">يتأهل:</span>${advBtn(m.home_team)}${advBtn(m.away_team)}</div>`;
+    adv = `<div class="adv-slot">${advanceContentHtml(m, locked)}</div>`;
   }
 
   return `
   <div class="match" data-id="${m.id}">
     <div class="side home">${flagImg(m.home_team)}<span class="tname">${tn(m.home_team)}</span></div>
     <div class="score-in">
-      <input type="number" min="0" max="30" value="${hv}" data-side="home" ${disabled} inputmode="numeric"/>
-      <span class="vs">:</span>
-      <input type="number" min="0" max="30" value="${av}" data-side="away" ${disabled} inputmode="numeric"/>
+      <div class="score-row">
+        <input type="number" min="0" max="30" value="${hv}" data-side="home" ${disabled} inputmode="numeric"/>
+        <span class="vs">:</span>
+        <input type="number" min="0" max="30" value="${av}" data-side="away" ${disabled} inputmode="numeric"/>
+      </div>
+      ${liveScore}
     </div>
     <div class="side away"><span class="tname">${tn(m.away_team)}</span>${flagImg(m.away_team)}</div>
     <div class="meta">
-      <span class="kick">${fmtKick(m.kickoff)}</span>
+      <span class="kick">${opts.showGroup && m.grp ? `<b class="mgrp">${esc(grpName(m.grp))}</b> · ` : ""}${fmtKick(m.kickoff)}</span>
       <span style="display:flex;gap:8px;align-items:center">
-        ${actual}<span class="saved-tag">حُفظ ✓</span>${statusPill}
+        <span class="saved-tag">حُفظ ✓</span>${statusPill}
       </span>
     </div>
     ${adv}
+    ${bracketNoteHtml(m, opts)}
     ${others}
   </div>`;
 }
 
-// أزرار "مَن يتأهل" في الإقصائيات
+// يُومض شارة "حُفظ ✓" داخل صف المباراة لطمأنة المستخدم
+function flashSaved(row) {
+  const tag = $(".saved-tag", row);
+  if (tag) { tag.classList.add("show"); setTimeout(() => tag.classList.remove("show"), 1200); }
+}
+// يحدّث تنبيه التعارض مع بطاقة التوقّع في صف معيّن
+function refreshBracketNote(row, id) {
+  const noteEl = $(".brk-note", row);
+  const m = state.matches.find((x) => x.id === id);
+  if (!noteEl || !m) return;
+  const n = bracketNote(m);
+  noteEl.innerHTML = n ? n.text : "";
+  noteEl.className = "brk-note" + (n ? (n.warn ? " warn" : "") : " hidden");
+}
+// يعيد رسم صف «من يتأهل» (أزرار ↔ تلقائي بالأهداف) ويعيد ربط الأزرار
+function refreshAdvanceRow(row, m) {
+  const slot = $(".adv-slot", row);
+  if (!slot) return;
+  slot.innerHTML = advanceContentHtml(m, isLocked(m));
+  wireAdvanceButtons(row, m.id);
+}
+// أزرار "مَن يتأهل" (تُستخدم عند التعادل أو قبل إدخال نتيجة)
+function wireAdvanceButtons(row, id) {
+  $$(".adv-btn", row).forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      const team = btn.dataset.team;
+      const { error } = await sb
+        .from("bracket_predictions")
+        .upsert({ user_id: state.user.id, match_id: id, advance_team: team, updated_at: new Date().toISOString() },
+                { onConflict: "user_id,match_id" });
+      if (error) { toast("مقفلة — انطلقت المباراة.", true); return; }
+      state.bracketPreds.set(id, team);
+      $$(".adv-btn", row).forEach((b) => b.classList.toggle("sel", b.dataset.team === team));
+      refreshBracketNote(row, id);
+      flashSaved(row);
+      toast("تم حفظ المتأهل ✓");
+    })
+  );
+}
 function wireAdvance(root) {
-  $$(".match", root).forEach((row) => {
-    const id = Number(row.dataset.id);
-    $$(".adv-btn", row).forEach((btn) =>
-      btn.addEventListener("click", async () => {
-        if (btn.disabled) return;
-        const team = btn.dataset.team;
-        const { error } = await sb
-          .from("bracket_predictions")
-          .upsert({ user_id: state.user.id, match_id: id, advance_team: team, updated_at: new Date().toISOString() },
-                  { onConflict: "user_id,match_id" });
-        if (error) { toast("مقفلة — انطلقت المباراة.", true); return; }
-        state.bracketPreds.set(id, team);
-        $$(".adv-btn", row).forEach((b) => b.classList.toggle("sel", b.dataset.team === team));
-        toast("تم حفظ المتأهل ✓");
-      })
-    );
-  });
+  $$(".match", root).forEach((row) => wireAdvanceButtons(row, Number(row.dataset.id)));
 }
 
 // حفظ توقّع نتيجة مباراة (مع تأخير بسيط)
@@ -409,23 +772,36 @@ function wireMatchInputs(root) {
           state.myPreds.set(id, { match_id: id, user_id: state.user.id, home_score, away_score });
           tag.classList.add("show"); setTimeout(() => tag.classList.remove("show"), 1200);
           maybeRevealNext(id);
+          // إقصائيات: نتيجة حاسمة → الفائز بالأهداف يُحفظ تلقائيًا كمتأهّل (في الخلفية)
+          const m = state.matches.find((x) => x.id === id);
+          if (m && isKnockout(m)) {
+            const byGoals = impliedWinner(m);
+            if (byGoals && state.bracketPreds.get(id) !== byGoals) {
+              const { error: e2 } = await sb.from("bracket_predictions").upsert(
+                { user_id: state.user.id, match_id: id, advance_team: byGoals, updated_at: new Date().toISOString() },
+                { onConflict: "user_id,match_id" });
+              if (!e2) state.bracketPreds.set(id, byGoals);
+            }
+            refreshAdvanceRow(row, m);
+            refreshBracketNote(row, id);
+          }
         }, 550);
       })
     );
   });
 }
 
-// عند إكمال توقعات مجموعة، افتح المجموعة التالية تلقائيًا
+// عند إكمال توقعات يومٍ كامل، افتح اليوم التالي تلقائيًا
 function maybeRevealNext(matchId) {
   const m = state.matches.find((x) => x.id === matchId);
   if (!m || m.stage !== "GROUP_STAGE") return;
-  const names = [...new Set(state.matches.filter((x) => x.stage === "GROUP_STAGE" && x.grp).map((x) => x.grp))].sort();
-  const idx = names.indexOf(m.grp);
-  if (idx < 0 || idx + 1 >= names.length) return;
-  const cur = names[idx];
-  const curMatches = state.matches.filter((x) => x.stage === "GROUP_STAGE" && x.grp === cur);
+  const days = [...new Set(state.matches.filter((x) => x.stage === "GROUP_STAGE").map((x) => saDateKey(x.kickoff)))].sort();
+  const day = saDateKey(m.kickoff);
+  const idx = days.indexOf(day);
+  if (idx < 0 || idx + 1 >= days.length) return;
+  const curMatches = state.matches.filter((x) => x.stage === "GROUP_STAGE" && saDateKey(x.kickoff) === day);
   if (curMatches.every((x) => state.myPreds.has(x.id))) {
-    const next = names[idx + 1];
+    const next = days[idx + 1];
     const wrap = $(`.group[data-grp="${cssAttr(next)}"]`);
     if (wrap && !state.groupToggle.has(next)) wrap.classList.remove("collapsed");
   }
@@ -433,30 +809,36 @@ function maybeRevealNext(matchId) {
 const cssAttr = (s) => String(s).replace(/"/g, '\\"');
 
 // =====================================================================
-//  دور المجموعات
+//  دور المجموعات — مرتّبة حسب اليوم (أسهل للتوقّع والمتابعة)
 // =====================================================================
-function groupComplete(matches) {
-  return matches.length > 0 && matches.every((m) => state.myPreds.has(m.id));
-}
 function renderGroups() {
   const el = $("#tab-groups");
   const groupMatches = state.matches.filter((m) => m.stage === "GROUP_STAGE");
   if (!groupMatches.length) { el.innerHTML = emptyState(); return; }
 
-  const byGroup = {};
-  groupMatches.forEach((m) => { (byGroup[m.grp || "؟"] ??= []).push(m); });
-  const names = Object.keys(byGroup).sort();
+  // تجميع المباريات حسب يومها (بتوقيت السعودية) مرتّبةً زمنيًا
+  const byDay = {};
+  groupMatches.forEach((m) => { (byDay[saDateKey(m.kickoff)] ??= []).push(m); });
+  const days = Object.keys(byDay).sort();
+  days.forEach((d) => byDay[d].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff)));
+
+  // اليوم المفتوح افتراضيًا = أول يوم فيه مباراة لم تنطلق بعد (وإلا فآخر يوم)
+  let firstOpen = days.findIndex((d) => byDay[d].some((m) => !isLocked(m)));
+  if (firstOpen === -1) firstOpen = days.length - 1;
 
   el.innerHTML =
-    `<p class="note">توقّع نتيجة كل مباراة. تُقفل المباراة عند انطلاقها. النتيجة الصحيحة بالضبط = ٢ نقطة، توقّع الفائز = ١. تُفتح المجموعة التالية تلقائيًا بعد إكمال توقعات المجموعة التي قبلها.</p>` +
-    names.map((g, idx) => {
-      const rows = byGroup[g].map((m) => matchRow(m)).join("");
-      const prevComplete = idx === 0 || groupComplete(byGroup[names[idx - 1]]);
-      const manual = state.groupToggle.get(g); // true=مفتوحة، false=مغلقة، undefined=تلقائي
-      const open = manual !== undefined ? manual : (idx === 0 || prevComplete);
-      const done = groupComplete(byGroup[g]) ? `<span class="group-done">✓ مكتملة</span>` : "";
-      return `<div class="group${open ? "" : " collapsed"}" data-grp="${esc(g)}">
-        <div class="group-head"><h3>${esc(grpName(g))} ${done}</h3><span class="chev">▾</span></div>
+    `<p class="note">توقّع نتيجة كل مباراة، مرتّبةً حسب اليوم. تُقفل المباراة عند انطلاقها وتظهر نتيجتها المباشرة بجانب توقّعك. النتيجة الصحيحة بالضبط = ٢ نقطة، توقّع الفائز = ١.</p>` +
+    days.map((d, idx) => {
+      const rows = byDay[d].map((m) => matchRow(m, { showGroup: true })).join("");
+      const manual = state.groupToggle.get(d); // true=مفتوح، false=مغلق، undefined=تلقائي
+      const open = manual !== undefined ? manual : idx === firstOpen;
+      const total = byDay[d].length;
+      const done = byDay[d].filter((m) => state.myPreds.has(m.id)).length;
+      const tag = done === total
+        ? `<span class="group-done">✓ مكتمل</span>`
+        : `<span class="day-count">${done}/${total}</span>`;
+      return `<div class="group${open ? "" : " collapsed"}" data-grp="${esc(d)}">
+        <div class="group-head"><h3>${esc(fmtSADate(byDay[d][0].kickoff))} ${tag}</h3><span class="chev">▾</span></div>
         <div class="group-body">${rows}</div>
       </div>`;
     }).join("");
@@ -487,11 +869,13 @@ function renderKnockouts() {
     ...STAGE_ORDER.filter((s) => byStage[s]),
     ...Object.keys(byStage).filter((s) => !STAGE_ORDER.includes(s)),
   ];
+  const active = activeStage(stages); // افتح المرحلة الجارية فقط
   el.innerHTML =
-    `<p class="note">توقّع النتيجة، واضغط على المنتخب الذي تظنه <b>سيتأهل</b> من كل مواجهة. النقاط: صحيحة بالضبط ٢ / الفائز ١. التأهل الصحيح: ${state.config?.points_advance ?? 2} نقطة. الكل يُقفل عند انطلاق المباراة.</p>` +
+    `<p class="note">توقّع نتيجة كل مواجهة: النتيجة الصحيحة بالضبط ٢. المتأهل ١ نقطة · عند التعادل اختر الفائز بركلات الترجيح.</p>` +
     stages.map((s) => {
       const rows = byStage[s].map((m) => matchRow(m, { advance: true })).join("");
-      return `<div class="group">
+      const open = s === active;
+      return `<div class="group${open ? "" : " collapsed"}">
         <div class="group-head"><h3>${stageLabel(s)}</h3><span class="chev">▾</span></div>
         <div class="group-body">${rows}</div>
       </div>`;
@@ -530,8 +914,26 @@ function renderBonus() {
     : `<span class="b-empty">— لم تُحدَّد بعد —</span>`;
   const champCorrect = b.champion && r.champion && b.champion === r.champion;
 
+  // ملخّص تقدّم التوقعات
+  const gmAll = state.matches.filter((m) => m.stage === "GROUP_STAGE");
+  const gmDone = gmAll.filter((m) => state.myPreds.has(m.id)).length;
+  const groupNames = [...new Set(gmAll.filter((m) => m.grp).map((m) => m.grp))];
+  const ordersDone = groupNames.filter((g) => {
+    const p = state.groupPreds.get(g);
+    return p && p.pos1 && p.pos2 && p.pos3 && p.pos4;
+  }).length;
+  const thirdsDone = (state.thirdPred?.teams || []).filter(Boolean).length;
+  const stat = (label, done, total) =>
+    `<div class="sum-stat"><span class="sum-num">${done}<small>/${total}</small></span><span class="sum-lbl">${label}</span></div>`;
+
   el.innerHTML =
-    `<p class="note">يُؤخذ البطل وأصحاب النهائي ونصف النهائي تلقائيًا من <b>بطاقة التوقّع</b> — هي المصدر الوحيد، فلا تُدخَل مرتين. لتغييرها، عدّل بطاقتك.</p>` +
+    `<p class="note">هذه صفحة <b>ملخّص توقعاتك</b>. البطل وأصحاب النهائي ونصف النهائي تُؤخذ تلقائيًا من <b>بطاقة التوقّع</b>. لتعديلها افتح البطاقة.</p>` +
+    `<div class="sum-grid">
+      ${stat("مباريات المجموعات", gmDone, gmAll.length)}
+      ${stat("ترتيب المجموعات", ordersDone, groupNames.length)}
+      ${stat("أفضل الثوالث", thirdsDone, 8)}
+      ${stat("البطل", b.champion ? 1 : 0, 1)}
+    </div>` +
     `<button id="go-bracket" class="btn-ghost" style="margin:0 4px 16px">🏆 فتح بطاقة التوقّع</button>` +
     `<div class="bonus-grid">
       <div class="bonus-card">
@@ -598,8 +1000,9 @@ function renderPicks() {
   }).join("");
 
   const note = locked
-    ? `<p class="note">توقعات الترتيب مقفلة (انطلقت البطولة).</p>`
-    : `<p class="note">رتّب فرق كل مجموعة بالسحب والإفلات من الأول إلى الرابع. تُقفل عند أول مباراة${C?.bonus_locks_at ? " (" + fmtKick(C.bonus_locks_at) + ")" : ""}. المركز الصحيح = ${C.points_group_pos} نقطة · المجموعة كاملة = +${C.points_group_perfect} · كل ثالث صحيح = ${C.points_third}.</p>`;
+    ? `<p class="note">توقعات الترتيب مقفلة (انتهت الجولة الأولى).</p>`
+    : `<p class="note hl">مدد وقت توقع المجموعات والأدوار الإقصائية لنهاية الجولة الأولى لزيادة الحنكة.${C?.bonus_locks_at ? " يُقفل: " + fmtKick(C.bonus_locks_at) : ""}</p>` +
+      `<p class="note">رتّب فرق كل مجموعة بالسحب والإفلات من الأول إلى الرابع. كل مركز صحيح = ${C.points_group_pos} نقطة · المجموعة المثالية: مكافأة +${C.points_group_perfect} (${C.points_group_pos * 4 + C.points_group_perfect} نقاط) · كل ثالث صحيح = ${C.points_third}.</p>`;
 
   el.innerHTML = note +
     `<h3 class="sec">📊 ترتيب المجموعات النهائي</h3><div class="bonus-grid picks-grid">${orderCards}</div>` +
@@ -610,7 +1013,8 @@ function renderPicks() {
       Sortable.create(ul, {
         animation: 150, handle: ".handle",
         forceFallback: true, fallbackTolerance: 3, // consistent on touch + mouse
-        onEnd: async () => { renumber(ul); await saveGroupOrder(ul); renderThirds(); },
+        onStart: () => { _dragBusy = true; },
+        onEnd: async () => { _dragBusy = false; renumber(ul); await saveGroupOrder(ul); renderThirds(); },
       })
     );
   }
@@ -790,8 +1194,9 @@ function renderBracket() {
     : `<div class="champ muted">🏆 اختر الفائز في كل دور حتى تصل إلى البطل</div>`;
 
   const note = locked
-    ? `<p class="note">بطاقة التوقّع مقفلة (انطلقت البطولة).</p>`
-    : `<p class="note">اختر الفائز في كل مواجهة وصولًا إلى البطل. تُبنى المواجهات من توقعاتك (الأول/الثاني/الثوالث)، وتُحدّث تلقائيًا توقع البطل وأصحاب النهائي ونصف النهائي. تُقفل عند أول مباراة.</p>`;
+    ? `<p class="note">بطاقة التوقّع مقفلة (انتهت الجولة الأولى).</p>`
+    : `<p class="note hl">مدد وقت توقع المجموعات والأدوار الإقصائية لنهاية الجولة الأولى لزيادة الحنكة.${state.config?.bonus_locks_at ? " يُقفل: " + fmtKick(state.config.bonus_locks_at) : ""}</p>` +
+      `<p class="note">اختر الفائز في كل مواجهة وصولًا إلى البطل. تُبنى المواجهات من توقعاتك (الأول/الثاني/الثوالث)، وتُحدّث تلقائيًا توقع البطل وأصحاب النهائي ونصف النهائي.</p>`;
 
   el.innerHTML = note + champHtml + `<div class="bracket">${roundsHtml}</div>`;
 
@@ -839,40 +1244,50 @@ function renderInfo() {
     </div>`;
   }).join("");
 
-  const sorted = [...state.matches].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
-  const byDay = {};
-  sorted.forEach((m) => { (byDay[saDateKey(m.kickoff)] ??= []).push(m); });
-
-  const schedHtml = Object.keys(byDay).sort().map((day) => {
-    const items = byDay[day].map((m) => {
-      const label = m.grp ? grpName(m.grp) : stageLabel(m.stage);
-      const finished = m.status === "FINISHED" && m.home_score != null;
-      const live = ["IN_PLAY", "PAUSED"].includes(m.status);
-      const scoreOrVs = finished || (live && m.home_score != null)
-        ? `<b class="sc">${m.home_score}–${m.away_score}</b>`
-        : `<span class="vs">×</span>`;
-      const flag = live ? `<span class="pill live">● مباشر</span>` : finished ? `<span class="pill points">انتهت</span>` : "";
-      return `<div class="srow">
-        <span class="stime">${fmtSATime(m.kickoff)}</span>
-        <span class="steams">
-          <span class="sh">${flagImg(m.home_team)}${tn(m.home_team)}</span>
-          ${scoreOrVs}
-          <span class="sa">${tn(m.away_team)}${flagImg(m.away_team)}</span>
-        </span>
-        <span class="stag">${esc(label)} ${flag}</span>
-      </div>`;
-    }).join("");
-    return `<div class="sday"><div class="sday-head">${fmtSADate(byDay[day][0].kickoff)}</div>${items}</div>`;
+  // الجدول الكامل: مُجمَّع حسب المرحلة ثم اليوم؛ تُفتح المرحلة الجارية فقط.
+  const renderSrow = (m) => {
+    const label = m.grp ? grpName(m.grp) : stageLabel(m.stage);
+    const finished = m.status === "FINISHED" && m.home_score != null;
+    const live = ["IN_PLAY", "PAUSED"].includes(m.status);
+    const scoreOrVs = finished || (live && m.home_score != null)
+      ? `<b class="sc">${m.home_score}–${m.away_score}</b>`
+      : `<span class="vs">×</span>`;
+    const flag = live ? `<span class="pill live">● مباشر</span>` : finished ? `<span class="pill points">انتهت</span>` : "";
+    return `<div class="srow">
+      <span class="stime">${fmtSATime(m.kickoff)}</span>
+      <span class="steams">
+        <span class="sh">${flagImg(m.home_team)}${tn(m.home_team)}</span>
+        ${scoreOrVs}
+        <span class="sa">${tn(m.away_team)}${flagImg(m.away_team)}</span>
+        ${decidedTag(m)}
+      </span>
+      <span class="stag">${esc(label)} ${flag}</span>
+    </div>`;
+  };
+  const schedStages = STAGE_ALL.filter((s) => state.matches.some((m) => m.stage === s));
+  const activeSched = activeStage(schedStages);
+  const schedHtml = schedStages.map((s) => {
+    const ms = state.matches.filter((m) => m.stage === s).sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+    const byDay = {};
+    ms.forEach((m) => { (byDay[saDateKey(m.kickoff)] ??= []).push(m); });
+    const daysHtml = Object.keys(byDay).sort().map((day) =>
+      `<div class="sday"><div class="sday-head">${fmtSADate(byDay[day][0].kickoff)}</div>${byDay[day].map(renderSrow).join("")}</div>`
+    ).join("");
+    const open = s === activeSched;
+    return `<div class="group${open ? "" : " collapsed"}">
+      <div class="group-head"><h3>${stageLabel(s)} <span class="day-count">${ms.length} مباراة</span></h3><span class="chev">▾</span></div>
+      <div class="group-body">${daysHtml}</div>
+    </div>`;
   }).join("");
 
   el.innerHTML =
     `<p class="note">تتحدّث جداول المجموعات تلقائيًا مع ورود النتائج (المتأهلان الأولان مظلّلان). كل المواعيد بتوقيت <b>السعودية (UTC+3)</b>.</p>` +
     `<div class="seg info-seg">
-       <button class="seg-btn active" data-view="tables">جداول المجموعات</button>
-       <button class="seg-btn" data-view="schedule">الجدول الكامل</button>
+       <button class="seg-btn" data-view="tables">جداول المجموعات</button>
+       <button class="seg-btn active" data-view="schedule">الجدول الكامل</button>
      </div>
-     <div id="info-tables">${groupsHtml}</div>
-     <div id="info-schedule" class="hidden">${schedHtml}</div>`;
+     <div id="info-tables" class="hidden">${groupsHtml}</div>
+     <div id="info-schedule">${schedHtml}</div>`;
 
   $$(".info-seg .seg-btn", el).forEach((b) =>
     b.addEventListener("click", () => {
@@ -891,21 +1306,67 @@ function renderInfo() {
 // =====================================================================
 async function renderBoard() {
   const el = $("#tab-board");
-  el.innerHTML = `<div class="empty">يتم حساب النقاط…</div>`;
+  if (!el.querySelector(".board")) el.innerHTML = `<div class="empty">يتم حساب النقاط…</div>`; // لا وميض عند التحديث التلقائي
   const { data, error } = await sb.rpc("get_leaderboard");
   if (error) { el.innerHTML = `<div class="empty">🏆 يظهر الترتيب عند انطلاق كأس العالم وبدء وصول النتائج.</div>`; return; }
-  if (!data?.length) { el.innerHTML = `<div class="empty">🏆 يظهر الترتيب عند انطلاق كأس العالم. سجّلوا استراحة 6 وابدؤوا التوقّع!</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">${esc(cfg.SITE_BOARD_EMPTY || "🏆 يظهر الترتيب عند انطلاق كأس العالم.")}</div>`; return; }
+
+  // إعادة توزيع للعرض فقط: تُجمع نقاط مباريات الإقصائيات (نتيجة/تامة) مع نقطة
+  // المتأهّل تحت «نقاط الإقصائيات»، وتبقى «تامة/نتيجة صحيحة» لدور المجموعات فقط.
+  // المجموع لا يتغيّر (يبقى u.total_points من قاعدة البيانات).
+  const PE = state.config?.points_exact ?? 2, PR = state.config?.points_result ?? 1, PA = state.config?.points_advance ?? 1;
+  const mById = new Map(state.matches.map((m) => [m.id, m]));
+  const split = new Map(); // uid -> { ge, gr, ko }
+  const su = (uid) => { let s = split.get(uid); if (!s) { s = { ge: 0, gr: 0, ko: 0 }; split.set(uid, s); } return s; };
+  const tallyPred = (p) => {
+    const m = mById.get(p.match_id);
+    if (!m || m.status !== "FINISHED" || m.home_score == null || m.away_score == null) return;
+    const exact = p.home_score === m.home_score && p.away_score === m.away_score;
+    const result = !exact && Math.sign(p.home_score - p.away_score) === Math.sign(m.home_score - m.away_score);
+    const s = su(p.user_id);
+    if (isKnockout(m)) s.ko += exact ? PE : (result ? PR : 0);
+    else if (exact) s.ge += 1; else if (result) s.gr += 1;
+  };
+  state.myPreds.forEach((p) => tallyPred(p));
+  state.othersPreds.forEach((list) => list.forEach((p) => tallyPred(p)));
+  // المتأهّل الفعّال لكل (مستخدم، مباراة) في الإقصائيات: يُبنى أولًا من التوقّعات
+  // الحاسمة، ثم يَغلبه الاختيار الصريح — ثم يُحتسب مرة واحدة. يطابق get_leaderboard.
+  const effByKey = new Map(); // `${uid}|${mid}` -> team
+  const setEff = (uid, mid, team) => { if (team) effByKey.set(`${uid}|${mid}`, team); };
+  const derive = (uid, p) => {
+    const m = mById.get(p.match_id);
+    if (!m || !isKnockout(m) || p.home_score == null || p.away_score == null) return;
+    const t = p.home_score > p.away_score ? m.home_team : (p.away_score > p.home_score ? m.away_team : null);
+    setEff(uid, p.match_id, t);
+  };
+  state.myPreds.forEach((p) => derive(state.user.id, p));
+  state.othersPreds.forEach((list) => list.forEach((p) => derive(p.user_id, p)));
+  state.bracketPreds.forEach((team, mid) => setEff(state.user.id, mid, team));
+  state.bracketOthers.forEach((list, mid) => list.forEach((b) => setEff(b.user_id, mid, b.advance_team)));
+  effByKey.forEach((team, key) => {
+    const i = key.indexOf("|");
+    const uid = key.slice(0, i), mid = Number(key.slice(i + 1));
+    const m = mById.get(mid);
+    if (!m || m.status !== "FINISHED") return;
+    const act = m.winner === "HOME_TEAM" ? m.home_team : m.winner === "AWAY_TEAM" ? m.away_team : null;
+    if (act && team === act) su(uid).ko += PA;
+  });
 
   const rows = data.map((u, i) => {
     const me = u.user_id === state.user.id ? " me" : "";
+    const sp = split.get(u.user_id) || { ge: 0, gr: 0, ko: 0 };
     const parts = [
-      `${u.exact_count} تامة`,
-      `${u.result_count} نتيجة`,
-      `${u.bonus_points} إضافية`,
+      `${sp.ge} توقّعات تامة`,
+      `${sp.gr} نتيجة صحيحة`,
     ];
-    if (u.group_points) parts.push(`${u.group_points} مجموعات`);
-    if (u.third_points) parts.push(`${u.third_points} ثوالث`);
-    if (u.bracket_points) parts.push(`${u.bracket_points} إقصائي`);
+    if (u.bonus_points) parts.push(`${u.bonus_points} نقاط إضافية`);
+    if (u.group_points) parts.push(`${u.group_points} نقاط الترتيب`);
+    if (u.perfect_groups) {
+      const pb = u.perfect_groups * (state.config?.points_group_perfect || 0);
+      parts.push(`<span class="perfect-tag"> ${u.perfect_groups} مجموعة مثالية (+${pb})</span>`);
+    }
+    if (u.third_points) parts.push(`${u.third_points} نقاط الثوالث`);
+    if (sp.ko) parts.push(`${sp.ko} نقاط الإقصائيات`);
     return `<div class="row${me}">
       <div class="rank">${i + 1}</div>
       <div class="name">${esc(u.display_name)}${me ? " (أنت)" : ""}
@@ -921,8 +1382,194 @@ function emptyState() {
   return `<div class="empty">لم تُحمّل المباريات بعد.<br/>تظهر تلقائيًا عند أول تشغيل لوظيفة النتائج.</div>`;
 }
 
+// =====================================================================
+//  جولة إرشادية (تظهر بعد تسجيل الدخول، ويمكن إغلاقها أو إعادتها لاحقًا)
+// =====================================================================
+const TOUR_VERSION = "v1";
+const tourKey = (uid) => `wc_tour_done_${TOUR_VERSION}_${uid || "anon"}`;
+const TOUR_STEPS = [
+  {
+    tab: null, kicker: "أهلاً بك 👋", title: "جولة سريعة في الموقع",
+    body: "خلّينا نأخذك في دقيقة واحدة على صفحات الموقع وكيف تتوقّع. تقدر تتخطّاها أو تعيدها لاحقًا من زر «؟» بالأسفل.",
+  },
+  {
+    tab: "groups", kicker: "الخطوة ١", title: "دور المجموعات",
+    body: "توقّع نتيجة كل مباراة في دور المجموعات. تُحفظ توقعاتك تلقائيًا، وتقدر تعدّلها وقت ما تشاء قبل انطلاق المباراة — وتُقفل عند صافرة البداية. (٢ نقطة للنتيجة بالضبط · ١ لتوقّع الفائز)",
+  },
+  {
+    tab: "knockouts", kicker: "الخطوة ٢", title: "الأدوار الإقصائية",
+    body: "مثل دور المجموعات لكن لمباريات خروج المغلوب: توقّع النتيجة وحدِّد مَن يتأهل من كل مواجهة. تظهر المباريات تلقائيًا بعد انتهاء دور المجموعات، وتقدر تغيّر توقعك حسب مجريات البطولة.",
+  },
+  {
+    tab: "picks", kicker: "الخطوة ٣", title: "ترتيب المجموعات",
+    body: "رتّب فرق كل مجموعة بالسحب والإفلات من الأول إلى الرابع (المتصدّر، الوصيف، الثالث، الرابع)، ثم اختر ٨ فرق تتوقّع تأهّلها كأفضل أصحاب المركز الثالث.",
+  },
+  {
+    tab: "bracket", kicker: "الخطوة ٤", title: "بطاقة التوقّع",
+    body: "تتحوّل ترتيباتك في الصفحة السابقة إلى شجرة إقصائيات من دور الـ32 حتى النهائي. اختر الفائز في كل مواجهة وصولًا إلى بطلك المتوقّع.",
+  },
+  {
+    tab: "bonus", kicker: "الخطوة ٥", title: "ملخص توقعاتي",
+    body: "صفحة ملخّص: تقدّمك في كل التوقعات، إضافةً إلى بطلك وأصحاب النهائي ونصف النهائي المأخوذين تلقائيًا من بطاقة توقّعك. لتعديلها افتح البطاقة.",
+  },
+  {
+    tab: "info", kicker: "الخطوة ٦", title: "المجموعات والجدول",
+    body: "صفحة معلومات: جداول المجموعات تتحدّث مباشرةً مع ورود النتائج، إضافةً إلى جدول كامل بمواعيد وأوقات جميع المباريات بتوقيت السعودية.",
+  },
+  {
+    tab: "board", kicker: "الخطوة ٧", title: "الترتيب العام",
+    body: "لوحة الصدارة: ترتيب جميع اللاعبين حسب النقاط وعدد التوقعات الصحيحة، ويُحدَّث تلقائيًا بعد كل مباراة. الأدقّ توقّعًا يتصدّر!",
+  },
+  {
+    tab: null, kicker: "جاهز 🎯", title: "ابدأ التوقّع!",
+    body: "ابدأ من «دور المجموعات». تقدر تعيد فتح هذه الجولة في أي وقت من زر «؟» في أسفل الشاشة. بالتوفيق!",
+  },
+];
+let tourIdx = 0;
+
+function buildTourDom() {
+  if ($("#tour")) return;
+  document.body.classList.add("tour-on");
+  const wrap = document.createElement("div");
+  wrap.id = "tour";
+  wrap.innerHTML = `<div id="tour-dim"></div><div id="tour-card" class="tour-card"></div>`;
+  document.body.appendChild(wrap);
+  window.addEventListener("resize", tourReposition);
+  window.addEventListener("scroll", tourReposition, { passive: true });
+}
+function tourReposition() { const s = TOUR_STEPS[tourIdx]; if (s && $("#tour")) positionCard(s); }
+function clearTourActive() { $$(".tab.tour-active").forEach((t) => t.classList.remove("tour-active")); }
+
+// We highlight the REAL active tab via a CSS class (so it can never drift on
+// any screen). Only the explanation card is positioned — and only roughly,
+// placed just under the tabs bar, centered on the highlighted tab.
+function positionCard(step) {
+  const card = $("#tour-card");
+  if (!card) return;
+  const tab = step.tab ? $(`.tab[data-tab="${step.tab}"]`) : null;
+  if (!tab) {
+    card.classList.add("center");
+    card.style.left = card.style.top = ""; card.style.transform = "";
+    return;
+  }
+  const nav = $(".tabs");
+  const navR = (nav || tab).getBoundingClientRect();
+  const tabR = tab.getBoundingClientRect();
+  card.classList.remove("center"); card.style.transform = "none";
+  const cw = card.offsetWidth || 340;
+  let left = tabR.left + tabR.width / 2 - cw / 2;
+  left = Math.max(12, Math.min(left, window.innerWidth - cw - 12));
+  card.style.left = left + "px";
+  card.style.top = (navR.bottom + 12) + "px";
+}
+
+function renderTourCard(step) {
+  const card = $("#tour-card");
+  if (!card) return;
+  const last = tourIdx === TOUR_STEPS.length - 1;
+  const dots = TOUR_STEPS.map((_, i) => `<span class="tour-dot${i === tourIdx ? " on" : ""}"></span>`).join("");
+  card.innerHTML = `
+    <button class="tour-x" id="tour-x" aria-label="إغلاق">✕</button>
+    <div class="tour-kicker">${esc(step.kicker)}</div>
+    <h3>${esc(step.title)}</h3>
+    <p>${esc(step.body)}</p>
+    <div class="tour-foot">
+      <div class="tour-dots">${dots}</div>
+      <div class="tour-btns">
+        ${tourIdx > 0 ? `<button class="tour-btn" id="tour-prev">السابق</button>` : `<button class="tour-skip" id="tour-skip">تخطّي</button>`}
+        <button class="tour-btn primary" id="tour-next">${last ? "ابدأ" : "التالي"}</button>
+      </div>
+    </div>`;
+  $("#tour-x", card).onclick = () => endTour(true);
+  const skip = $("#tour-skip", card); if (skip) skip.onclick = () => endTour(true);
+  const prev = $("#tour-prev", card); if (prev) prev.onclick = () => { tourIdx = Math.max(0, tourIdx - 1); showTourStep(); };
+  $("#tour-next", card).onclick = () => {
+    if (last) { endTour(true); return; }
+    tourIdx = Math.min(TOUR_STEPS.length - 1, tourIdx + 1); showTourStep();
+  };
+}
+
+function showTourStep() {
+  clearTourActive();
+  const step = TOUR_STEPS[tourIdx];
+  if (step.tab) {
+    const t = $(`.tab[data-tab="${step.tab}"]`);
+    if (t) {
+      t.click();                      // switch to that page (sets .active)
+      t.classList.add("tour-active"); // our spotlight ring, on the real tab
+      try { t.scrollIntoView({ block: "nearest", inline: "center" }); } catch {}
+    }
+  }
+  renderTourCard(step);
+  // Card placement only (the highlight itself is the real element, never drifts).
+  requestAnimationFrame(() => requestAnimationFrame(() => positionCard(step)));
+}
+
+function startTour() {
+  tourIdx = 0;
+  buildTourDom();
+  showTourStep();
+}
+function endTour(markDone) {
+  const w = $("#tour"); if (w) w.remove();
+  document.body.classList.remove("tour-on");
+  clearTourActive();
+  window.removeEventListener("resize", tourReposition);
+  window.removeEventListener("scroll", tourReposition);
+  if (markDone && state.user) { try { localStorage.setItem(tourKey(state.user.id), "1"); } catch {} }
+}
+function maybeStartTour() {
+  try {
+    if (state.user && !localStorage.getItem(tourKey(state.user.id))) startTour();
+  } catch { /* localStorage blocked — skip */ }
+}
+
+// تنبيه يظهر مرة واحدة فقط — حصريًا لموقع «استراحة 6» (يُعرّف بمشروع Supabase
+// الخاص به)، فلا يظهر على موقع العائلة رغم اشتراكهما في نفس الكود.
+const NOTICE_VERSION = "v1";
+function isEstraha6() {
+  return String(cfg.SUPABASE_URL || "").includes("rodqybmuajlebyotmgmq");
+}
+function maybeShowNotice() {
+  if (!isEstraha6() || !state.user) return;
+  const key = `estraha6_notice_${NOTICE_VERSION}_${state.user.id}`;
+  try {
+    if (localStorage.getItem(key)) return; // عُرض من قبل
+  } catch { return; }
+  showNotice("مهما أخذتك الحنكة والحماس، تذكر انه مافي جوائز");
+  try { localStorage.setItem(key, "1"); } catch {}
+}
+function showNotice(text) {
+  if ($("#notice")) return;
+  const wrap = document.createElement("div");
+  wrap.id = "notice";
+  wrap.innerHTML =
+    `<div class="notice-dim"></div>` +
+    `<div class="notice-card" role="dialog" aria-modal="true">` +
+      `<div class="notice-emoji">🏆</div>` +
+      `<p class="notice-text">${esc(text)}</p>` +
+      `<button class="notice-ok" type="button">حسناً</button>` +
+    `</div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  $(".notice-ok", wrap).addEventListener("click", close);
+  $(".notice-dim", wrap).addEventListener("click", close);
+}
+function ensureTourHelp() {
+  if ($("#tour-help")) return;
+  const b = document.createElement("button");
+  b.id = "tour-help";
+  b.type = "button";
+  b.title = "شرح صفحات الموقع";
+  b.textContent = "؟";
+  b.addEventListener("click", () => startTour());
+  document.body.appendChild(b);
+}
+
 // ---------- إقلاع ----------
 (async () => {
+  // رابط إعادة تعيين كلمة المرور: اعرض شاشة كلمة المرور الجديدة بدل الدخول.
+  if (window.location.hash.includes("type=recovery")) { isRecovery = true; showRecovery(); return; }
   const { data } = await sb.auth.getSession();
   if (data.session?.user) {
     if (!entering) { entering = true; enterApp(data.session.user); }

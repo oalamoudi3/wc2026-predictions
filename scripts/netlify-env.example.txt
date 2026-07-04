@@ -1,0 +1,27 @@
+# Per-site Netlify environment variables
+# Set these in Netlify Dashboard → Site settings → Environment variables
+# OR run: pwsh scripts/set-netlify-env.ps1 -Site estraha6|wc2026
+
+## estraha6-site (استراحة 6 group)
+# Site ID: 7bcbff48-13f4-419d-97d3-c876d44d669f
+
+SUPABASE_URL=https://rodqybmuajlebyotmgmq.supabase.co
+SUPABASE_ANON_KEY=sb_publishable_HqmySh_KmRBO-UMKMnPTCA_9SB7wnV8
+SUPABASE_SERVICE_ROLE_KEY=<from Supabase → estraha6-db → Settings → API → service_role>
+FOOTBALL_DATA_TOKEN=c1f8079b0d644de2b86381c6aad8ddc3
+
+SITE_GROUP_NAME=استراحة 6
+SITE_TAGLINE=توقّعات لاستراحة 6. بطلٌ واحد. وافتخارٌ طوال الصيف.
+SITE_BOARD_EMPTY=🏆 يظهر الترتيب عند انطلاق كأس العالم. سجّلوا استراحة 6 وابدؤوا التوقّع!
+
+## wc2026-predictions2026 (second group)
+# Site ID: e3e9df13-7fd8-408e-a5e9-d04c93da0c1c
+
+SUPABASE_URL=https://aihjrgdzglrerkuxatvv.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFpaGpyZ2R6Z2xyZXJrdXhhdHZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2NDc5NjEsImV4cCI6MjA5NjIyMzk2MX0.P9f2uW1_g3SxDvaKRcJafx5fXUED6oGGozskDNAjPk4
+SUPABASE_SERVICE_ROLE_KEY=<from Supabase → World Cup → Settings → API → service_role>
+FOOTBALL_DATA_TOKEN=<your second football-data.org token>
+
+SITE_GROUP_NAME=توقعاتنا
+SITE_TAGLINE=توقّعات مجموعتنا. بطلٌ واحد. وافتخارٌ طوال الصيف.
+SITE_BOARD_EMPTY=🏆 يظهر الترتيب عند انطلاق كأس العالم. سجّلوا توقعاتكم وابدؤوا التوقّع!
