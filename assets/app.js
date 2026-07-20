@@ -345,7 +345,7 @@ function userBusy() {
   const a = document.activeElement;
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return true;
   if (_dragBusy) return true;                 // أثناء سحب ترتيب المجموعات
-  if ($("#tour") || $("#notice")) return true; // نافذة الجولة/التنبيه مفتوحة
+  if ($("#tour") || $("#notice") || $("#champ")) return true; // نافذة الجولة/التنبيه/التتويج مفتوحة
   const rec = $("#recovery-view");
   if (rec && !rec.classList.contains("hidden")) return true;
   return false;
@@ -406,6 +406,8 @@ async function loadAll() {
   await loadBonus();
   await loadExtraPreds();
   renderActiveTab();
+  // بعد تحديث البيانات: إن انتهى النهائي، اعرض تتويج البطل (مرة واحدة).
+  maybeShowChampion().catch(() => {});
 }
 
 // توقعات الترتيب/الثوالث/الإقصائيات. يتعامل بهدوء إن لم تُطبّق predictions.sql بعد.
@@ -475,7 +477,7 @@ async function loadExtraPreds() {
 }
 
 async function loadPredictions() {
-  const data = await fetchAllById("predictions", "match_id,user_id,home_score,away_score");
+  const data = await fetchAllById("predictions", "match_id,user_id,home_score,away_score,created_at,updated_at");
   state.myPreds = new Map();
   state.othersPreds = new Map();
   data.forEach((p) => {
@@ -514,6 +516,7 @@ function renderActiveTab() {
   else if (tab === "bracket") renderBracket();
   else if (tab === "info") renderInfo();
   else if (tab === "board") renderBoard();
+  else if (tab === "stats") renderStats();
 }
 
 // الفرق التي توقّع المستخدم في «بطاقة التوقّع» تأهّلها من هذا الدور
@@ -1380,6 +1383,165 @@ async function renderBoard() {
 
 function emptyState() {
   return `<div class="empty">لم تُحمّل المباريات بعد.<br/>تظهر تلقائيًا عند أول تشغيل لوظيفة النتائج.</div>`;
+}
+
+// =====================================================================
+//  تبويب الإحصائيات — أفضل ٥ في كل فئة
+//  يجمع بين لوحة الصدارة (get_leaderboard) والتوقّعات المحمّلة محليًا.
+//  قسمة نقاط النتائج (مجموعات/إقصائيات) تُحسب هنا بنفس منطق لوحة الصدارة،
+//  ونقطة المتأهّل تؤخذ من الخادم (bracket_points) لضمان التطابق.
+// =====================================================================
+async function renderStats() {
+  const el = $("#tab-stats");
+  if (!el.querySelector(".stats")) el.innerHTML = `<div class="empty">يتم حساب الإحصائيات…</div>`;
+  const { data: lb, error } = await sb.rpc("get_leaderboard");
+  if (error || !lb || !lb.length) {
+    el.innerHTML = `<div class="empty">📊 تظهر الإحصائيات عند انطلاق البطولة وبدء وصول النتائج.</div>`;
+    return;
+  }
+
+  const PE = state.config?.points_exact ?? 2, PR = state.config?.points_result ?? 1;
+  const mById = new Map(state.matches.map((m) => [m.id, m]));
+  const add = (map, uid, v) => map.set(uid, (map.get(uid) || 0) + v);
+
+  // نقاط تسجيل النتائج مقسومة: دور المجموعات · الأدوار الإقصائية
+  const grpScore = new Map(), koScore = new Map();
+  const scorePred = (p) => {
+    const m = mById.get(p.match_id);
+    if (!m || m.status !== "FINISHED" || m.home_score == null || m.away_score == null) return;
+    const exact = p.home_score === m.home_score && p.away_score === m.away_score;
+    const result = !exact && Math.sign(p.home_score - p.away_score) === Math.sign(m.home_score - m.away_score);
+    const pts = exact ? PE : (result ? PR : 0);
+    if (pts) add(isKnockout(m) ? koScore : grpScore, p.user_id, pts);
+  };
+  // النشاط (عدد التوقّعات) والتغييرات (توقّعات عُدِّلت بعد إدخالها بأكثر من ٥ دقائق)
+  const activity = new Map(), changes = new Map();
+  const meta = (p) => {
+    add(activity, p.user_id, 1);
+    if (p.created_at && p.updated_at && (new Date(p.updated_at) - new Date(p.created_at)) > 5 * 60000)
+      add(changes, p.user_id, 1);
+  };
+  const eachPred = (p) => { scorePred(p); meta(p); };
+  state.myPreds.forEach(eachPred);
+  state.othersPreds.forEach((list) => list.forEach(eachPred));
+
+  // الأدوار الإقصائية = نقاط النتائج + نقاط المتأهّل (من الخادم)
+  const koTotal = new Map();
+  new Set([...koScore.keys(), ...lb.map((u) => u.user_id)]).forEach((uid) => {
+    const bp = lb.find((u) => u.user_id === uid)?.bracket_points || 0;
+    koTotal.set(uid, (koScore.get(uid) || 0) + bp);
+  });
+
+  const nameOf = (uid) => state.names.get(uid) || lb.find((u) => u.user_id === uid)?.display_name || "؟";
+  const fromMap = (map) => [...map.entries()].map(([uid, v]) => ({ uid, name: nameOf(uid), v }))
+    .filter((x) => x.v > 0).sort((a, b) => b.v - a.v).slice(0, 5);
+  const fromField = (f) => lb.map((u) => ({ uid: u.user_id, name: u.display_name, v: u[f] || 0 }))
+    .filter((x) => x.v > 0).sort((a, b) => b.v - a.v).slice(0, 5);
+
+  const cards = [
+    { icon: "⚽", title: "دور المجموعات", sub: "نقاط توقّع نتائج مباريات المجموعات", unit: "نقطة", list: fromMap(grpScore) },
+    { icon: "🎯", title: "الأدوار الإقصائية", sub: "نقاط النتائج + المتأهّل في الإقصائيات", unit: "نقطة", list: fromMap(koTotal) },
+    { icon: "🏆", title: "البطل والنهائيون ونصف النهائيون", sub: "النقاط الإضافية", unit: "نقطة", list: fromField("bonus_points") },
+    { icon: "📊", title: "ترتيب المجموعات", sub: "توقّع ترتيب فرق كل مجموعة", unit: "نقطة", list: fromField("group_points") },
+    { icon: "🥉", title: "أصحاب المركز الثالث", sub: "توقّع المتأهّلين من الثوالث", unit: "نقطة", list: fromField("third_points") },
+    { icon: "🔥", title: "الأكثر تفاعلًا", sub: "عدد التوقّعات المُدخَلة", unit: "توقّع", list: fromMap(activity) },
+    { icon: "✏️", title: "الأكثر تغييرًا لتوقّعاته", sub: "توقّعات عُدِّلت بعد إدخالها", unit: "تعديل", list: fromMap(changes) },
+  ];
+
+  const medals = ["🥇", "🥈", "🥉", "٤", "٥"];
+  const cardHtml = (c) => {
+    const rows = c.list.length
+      ? c.list.map((x, i) => `<div class="st-row${x.uid === state.user.id ? " me" : ""}">
+          <span class="st-rank">${medals[i]}</span>
+          <span class="st-name">${esc(x.name)}${x.uid === state.user.id ? " <em>(أنت)</em>" : ""}</span>
+          <span class="st-val">${x.v}<small> ${c.unit}</small></span>
+        </div>`).join("")
+      : `<div class="st-empty">لا بيانات بعد</div>`;
+    return `<div class="st-card">
+      <div class="st-head"><span class="st-ico">${c.icon}</span>
+        <div><div class="st-title">${c.title}</div><div class="st-sub">${c.sub}</div></div></div>
+      <div class="st-list">${rows}</div>
+    </div>`;
+  };
+  el.innerHTML = `<p class="note">أفضل ٥ في كل فئة · يتحدّث تلقائيًا مع ورود النتائج.</p>
+    <div class="stats">${cards.map(cardHtml).join("")}</div>`;
+}
+
+// =====================================================================
+//  تتويج البطل — يظهر مرة واحدة بعد انتهاء مباراة النهائي.
+//  المرحلة ١: بطل كأس العالم (يُقرأ الفائز من مباراة النهائي).
+//  المرحلة ٢: بطل التوقّعات (متصدّر لوحة الصدارة) + قصاصات + فيديو.
+// =====================================================================
+function finalMatch() { return state.matches.find((m) => m.stage === "FINAL"); }
+function finalWinnerTeam(m) {
+  if (!m || m.status !== "FINISHED") return null;
+  if (m.winner === "HOME_TEAM") return m.home_team;
+  if (m.winner === "AWAY_TEAM") return m.away_team;
+  if (m.home_score != null && m.away_score != null) {
+    if (m.home_score > m.away_score) return m.home_team;
+    if (m.away_score > m.home_score) return m.away_team;
+  }
+  return null; // لم يُحسم بعد
+}
+async function maybeShowChampion() {
+  if (!state.user) return;
+  const champTeam = finalWinnerTeam(finalMatch());
+  if (!champTeam) return;                         // النهائي لم ينتهِ بعد
+  const key = `wc_champion_${state.user.id}`;
+  try { if (localStorage.getItem(key)) return; } catch { return; }
+  let leaderName = null, leaderIsMe = false;
+  try {
+    const { data } = await sb.rpc("get_leaderboard");
+    if (data && data.length) { leaderName = data[0].display_name; leaderIsMe = data[0].user_id === state.user.id; }
+  } catch {}
+  try { localStorage.setItem(key, "1"); } catch {}
+  showChampion(champTeam, leaderName, leaderIsMe);
+}
+function fireConfetti() {
+  if (typeof window.confetti !== "function") return;
+  const colors = ["#f6c945", "#2fe08a", "#5b8cff", "#ff5a5f", "#ffffff"];
+  window.confetti({ particleCount: 180, spread: 100, startVelocity: 45, origin: { y: 0.55 }, colors });
+  const end = Date.now() + 2600;
+  (function frame() {
+    window.confetti({ particleCount: 5, angle: 60, spread: 65, origin: { x: 0 }, colors });
+    window.confetti({ particleCount: 5, angle: 120, spread: 65, origin: { x: 1 }, colors });
+    if (Date.now() < end) requestAnimationFrame(frame);
+  })();
+}
+function showChampion(champTeam, leaderName, leaderIsMe) {
+  if ($("#champ")) return;
+  const wrap = document.createElement("div");
+  wrap.id = "champ";
+  wrap.innerHTML =
+    `<div class="champ-dim"></div>` +
+    `<div class="champ-card" role="dialog" aria-modal="true">` +
+      `<div class="champ-stage" data-stage="1">` +
+        `<div class="champ-trophy">🏆</div>` +
+        `<div class="champ-kicker">بطل كأس العالم ٢٠٢٦</div>` +
+        `<div class="champ-team">${flagImg(champTeam, "champ-flag")}<span>${tn(champTeam)}</span></div>` +
+        `<button class="champ-next" type="button">تتويج بطل التوقّعات 🎉</button>` +
+      `</div>` +
+      `<div class="champ-stage" data-stage="2" hidden>` +
+        `<div class="champ-kicker">بطل التوقّعات</div>` +
+        `<div class="champ-winner">${esc(leaderName || "—")}</div>` +
+        (leaderIsMe ? `<div class="champ-you">🎉 مبروك! أنت البطل 🎉</div>` : ``) +
+        `<video class="champ-video" src="./assets/champion.mp4" playsinline controls preload="auto"></video>` +
+        `<button class="champ-ok" type="button">إغلاق</button>` +
+      `</div>` +
+    `</div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  const vid = $(".champ-video", wrap);
+  // إن لم يتوفّر ملف الفيديو، أخفِه بهدوء (تبقى القصاصات والاسم).
+  vid.addEventListener("error", () => { vid.style.display = "none"; });
+  $(".champ-next", wrap).addEventListener("click", () => {
+    $('.champ-stage[data-stage="1"]', wrap).hidden = true;
+    $('.champ-stage[data-stage="2"]', wrap).hidden = false;
+    fireConfetti();
+    try { vid.play().catch(() => {}); } catch {}
+  });
+  $(".champ-ok", wrap).addEventListener("click", close);
+  $(".champ-dim", wrap).addEventListener("click", close);
 }
 
 // =====================================================================

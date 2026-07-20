@@ -10,3 +10,5 @@ scripts/seed-batches/
 scripts/seed-clean.sql
 scripts/seed-batch-*.sql
 .DS_Store
+
+video/

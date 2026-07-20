@@ -553,3 +553,53 @@ body.tour-on .tab.tour-active {
 .chip-adv { font-weight: 800; color: var(--gold); white-space: nowrap; }
 .chip-adv.ok { color: var(--green); }   /* picked the actual advancer */
 .chip-adv.no { color: var(--red); }     /* picked wrong (after the match) */
+
+/* ===== الإحصائيات — بطاقات أفضل ٥ ===== */
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.st-card {
+  border: 1px solid var(--line-soft); border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface), var(--ink-2)); padding: 14px 14px 8px;
+}
+.st-head { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
+.st-ico { font-size: 22px; line-height: 1; }
+.st-title { font-family: "Cairo", sans-serif; font-weight: 800; font-size: 14.5px; color: var(--text); }
+.st-sub { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.st-list { padding-top: 2px; }
+.st-row {
+  display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 10px;
+  padding: 9px 2px; border-top: 1px solid var(--line-soft);
+}
+.st-row:first-child { border-top: 0; }
+.st-rank { font-family: "Cairo", sans-serif; font-weight: 900; font-size: 15px; text-align: center; color: var(--muted); }
+.st-name { color: var(--text); font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-name em { color: var(--green); font-style: normal; font-weight: 700; font-size: 12px; }
+.st-val { font-family: "Cairo", sans-serif; font-weight: 800; font-size: 16px; color: var(--gold); white-space: nowrap; }
+.st-val small { color: var(--muted); font-weight: 400; font-size: 11px; }
+.st-row.me { background: rgba(47,224,138,.07); border-radius: 8px; }
+.st-empty { color: var(--muted); font-size: 12.5px; padding: 12px 2px; }
+
+/* ===== تتويج البطل (يظهر بعد انتهاء النهائي) ===== */
+#champ .champ-dim { position: fixed; inset: 0; z-index: 3000; background: rgba(4,10,7,.86); }
+.champ-card {
+  position: fixed; z-index: 3001; inset: 0; margin: auto;
+  width: min(92vw, 460px); height: max-content; max-height: 90vh; overflow: auto;
+  background: linear-gradient(180deg, var(--surface), var(--ink-2));
+  border: 1px solid var(--line); border-radius: 22px; padding: 30px 24px; text-align: center;
+  animation: champPop .28s ease-out;
+}
+@keyframes champPop { from { transform: scale(.94); } to { transform: scale(1); } }
+.champ-trophy { font-size: 60px; line-height: 1; margin-bottom: 6px; }
+.champ-kicker { font-size: 12px; letter-spacing: .28em; color: var(--green); font-weight: 700; }
+.champ-team {
+  display: flex; align-items: center; justify-content: center; gap: 12px; margin: 14px 0 22px;
+  font-family: "Cairo", sans-serif; font-weight: 900; font-size: 30px; color: var(--gold);
+}
+.champ-flag { width: 40px; height: 28px; border-radius: 4px; object-fit: cover; }
+.champ-next, .champ-ok {
+  border: 0; border-radius: 12px; padding: 13px 22px; font-family: inherit; font-weight: 800; font-size: 15px;
+}
+.champ-next { background: linear-gradient(180deg, var(--green), #1bbf6f); color: #042716; }
+.champ-ok { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); margin-top: 14px; }
+.champ-winner { font-family: "Cairo", sans-serif; font-weight: 900; font-size: 34px; color: var(--gold); margin: 12px 0 6px; }
+.champ-you { color: var(--green); font-weight: 800; font-size: 16px; margin: 6px 0 14px; }
+.champ-video { width: 100%; border-radius: 14px; border: 1px solid var(--line); background: #000; margin: 8px 0 4px; display: block; }
