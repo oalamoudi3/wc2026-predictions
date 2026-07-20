@@ -508,7 +508,7 @@ $$(".tab").forEach((t) =>
   })
 );
 function renderActiveTab() {
-  const tab = state.activeTab || "info"; // الافتراضي عند الدخول: المجموعات والجدول
+  const tab = state.activeTab || "board"; // الافتراضي عند الدخول: الترتيب العام
   if (tab === "groups") renderGroups();
   else if (tab === "knockouts") renderKnockouts();
   else if (tab === "bonus") renderBonus();
@@ -1487,14 +1487,15 @@ async function maybeShowChampion() {
   if (!state.user) return;
   const champTeam = finalWinnerTeam(finalMatch());
   if (!champTeam) return;                         // النهائي لم ينتهِ بعد
-  const key = `wc_champion_${state.user.id}`;
-  try { if (localStorage.getItem(key)) return; } catch { return; }
+  // يظهر عند كل تحميل/تحديث للصفحة (العلم في الذاكرة يُصفَّر مع إعادة التحميل)،
+  // لكنه لا يتكرر مع التحديث التلقائي كل دقيقة ولا بعد إغلاقه في نفس الجلسة.
+  if (state._champShown) return;
+  state._champShown = true;
   let leaderName = null, leaderIsMe = false;
   try {
     const { data } = await sb.rpc("get_leaderboard");
     if (data && data.length) { leaderName = data[0].display_name; leaderIsMe = data[0].user_id === state.user.id; }
   } catch {}
-  try { localStorage.setItem(key, "1"); } catch {}
   showChampion(champTeam, leaderName, leaderIsMe);
 }
 function fireConfetti() {
