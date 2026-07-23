@@ -25,8 +25,8 @@ const sites = {
       SUPABASE_ANON_KEY:
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFpaGpyZ2R6Z2xyZXJrdXhhdHZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2NDc5NjEsImV4cCI6MjA5NjIyMzk2MX0.P9f2uW1_g3SxDvaKRcJafx5fXUED6oGGozskDNAjPk4",
       FOOTBALL_DATA_TOKEN: "c1f8079b0d644de2b86381c6aad8ddc3",
-      SITE_GROUP_NAME: "العائلة",
-      SITE_TAGLINE: "توقّعات العائلة. بطلٌ واحد. وافتخارٌ طوال الصيف.",
+      SITE_GROUP_NAME: "البناء",
+      SITE_TAGLINE: "توقّعات البناء. بطلٌ واحد. وافتخارٌ طوال الصيف.",
       SITE_BOARD_EMPTY:
         "🏆 يظهر الترتيب عند انطلاق كأس العالم. سجّلوا توقعاتكم وابدؤوا التوقّع!",
     },
